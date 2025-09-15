@@ -6,6 +6,7 @@ const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
 const UserProfile = require("../models/userprofile");
 const Attendance = require("../models/attendance");
+const mongoose = require('mongoose');
 console.log("UserProfile model loaded:", UserProfile.modelName); // Add this debug line
 require("dotenv").config();
 
@@ -16,7 +17,7 @@ const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 
 // Nodemailer Setup
-const transporter = nodemailer.createTransport({
+const transporter = nodemailer.createTransporter({
   service: "gmail",
   auth: { 
     user: EMAIL_USER, 
@@ -48,6 +49,31 @@ const sendVerificationEmail = async (email, verificationCode) => {
     console.error("Email sending error:", err);
     throw new Error("Failed to send verification email");
   }
+};
+
+// Middleware to extract user from JWT token
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: "Access token required"
+    });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      console.error("Token verification error:", err);
+      return res.status(403).json({
+        success: false,
+        message: "Invalid or expired token"
+      });
+    }
+    req.user = user;
+    next();
+  });
 };
 
 // Middleware to update lastActive timestamp
@@ -649,12 +675,36 @@ router.delete("/users/:id", async (req, res) => {
     });
   }
 });
-// 🔹 Get User Profile
-router.get("/profile/:userId", async (req, res) => {
+
+// 🔹 Get User Profile (Updated with authentication and validation)
+router.get("/profile/:userId", authenticateToken, async (req, res) => {
   try {
     const { userId } = req.params;
     
+    console.log("=== Get Profile Request ===");
+    console.log("Requested userId:", userId);
+    console.log("Request user from token:", req.user);
+    
+    // Validate userId format
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      console.log("Invalid userId format");
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID format"
+      });
+    }
+    
+    // Check authorization - user can only view their own profile unless admin
+    if (req.user.id !== userId && req.user.role !== 'admin') {
+      console.log("Authorization failed: User trying to access different profile");
+      return res.status(403).json({
+        success: false,
+        message: "You can only access your own profile"
+      });
+    }
+    
     const profile = await UserProfile.findOne({ userId });
+    console.log("Profile found:", !!profile);
     
     if (!profile) {
       return res.status(404).json({
@@ -663,6 +713,7 @@ router.get("/profile/:userId", async (req, res) => {
       });
     }
 
+    console.log("Sending profile data");
     res.status(200).json({
       success: true,
       profile
@@ -672,14 +723,19 @@ router.get("/profile/:userId", async (req, res) => {
     console.error("Get profile error:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to fetch profile"
+      message: "Failed to fetch profile",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
 
-// 🔹 Update/Create User Profile
-router.post("/update-profile", async (req, res) => {
+// 🔹 Update/Create User Profile (Fixed with authentication and better validation)
+router.post("/update-profile", authenticateToken, async (req, res) => {
   try {
+    console.log("=== Profile Update Request ===");
+    console.log("Request body:", JSON.stringify(req.body, null, 2));
+    console.log("User from token:", req.user);
+
     const {
       userId,
       name,
@@ -699,14 +755,25 @@ router.post("/update-profile", async (req, res) => {
 
     // Input validation
     if (!userId || !name || !phone || !department || !jobTitle || !shift) {
+      console.log("Validation failed: Missing required fields");
       return res.status(400).json({
         success: false,
-        message: "Required fields: name, phone, department, jobTitle, shift"
+        message: "Required fields: userId, name, phone, department, jobTitle, shift"
+      });
+    }
+
+    // Validate userId format (MongoDB ObjectId)
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      console.log("Validation failed: Invalid userId format");
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID format"
       });
     }
 
     // Validate working hours
     if (!workingHours || !workingHours.start || !workingHours.end) {
+      console.log("Validation failed: Missing working hours");
       return res.status(400).json({
         success: false,
         message: "Working hours start and end times are required"
@@ -715,124 +782,192 @@ router.post("/update-profile", async (req, res) => {
 
     // Validate emergency contact
     if (!emergencyContact || !emergencyContact.name || !emergencyContact.relationship || !emergencyContact.phone) {
+      console.log("Validation failed: Missing emergency contact");
       return res.status(400).json({
         success: false,
         message: "Emergency contact information is required"
       });
     }
 
+    // Verify user exists
+    const userExists = await User.findById(userId);
+    if (!userExists) {
+      console.log("User not found:", userId);
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
+      });
+    }
+
+    // Check authorization - user can only update their own profile unless admin
+    if (req.user.id !== userId && req.user.role !== 'admin') {
+      console.log("Authorization failed: User trying to update different profile");
+      return res.status(403).json({
+        success: false,
+        message: "You can only update your own profile"
+      });
+    }
+
+    console.log("All validations passed, proceeding with profile update/create");
+
     // Check if profile exists
     let profile = await UserProfile.findOne({ userId });
+    console.log("Existing profile found:", !!profile);
 
-    if (profile) {
-      // Update existing profile
-      profile.name = name.trim();
-      profile.phone = phone.trim();
-      profile.profilePicture = profilePicture || null;
-      profile.department = department;
-      profile.jobTitle = jobTitle;
-      profile.shift = shift;
-      profile.workingHours = workingHours;
-      profile.skills = skills || [];
-      profile.yearsWorked = parseInt(yearsWorked) || 0;
-      profile.specialTraining = specialTraining || [];
-      profile.shiftFlexibility = shiftFlexibility || false;
-      profile.emergencyContact = {
+    // Prepare clean data
+    const profileData = {
+      userId,
+      name: name.trim(),
+      phone: phone.trim(),
+      profilePicture: profilePicture || null,
+      department,
+      jobTitle,
+      shift,
+      workingHours: {
+        start: workingHours.start,
+        end: workingHours.end
+      },
+      skills: Array.isArray(skills) ? skills : [],
+      yearsWorked: parseInt(yearsWorked) || 0,
+      specialTraining: Array.isArray(specialTraining) ? 
+        specialTraining.filter(training => training && training.trim() !== '') : [],
+      shiftFlexibility: Boolean(shiftFlexibility),
+      emergencyContact: {
         name: emergencyContact.name.trim(),
         relationship: emergencyContact.relationship.trim(),
         phone: emergencyContact.phone.trim()
-      };
-      profile.notes = notes || '';
-      profile.profileComplete = true;
-      profile.lastUpdated = new Date();
+      },
+      notes: notes ? notes.trim() : '',
+      profileComplete: true,
+      lastUpdated: new Date()
+    };
 
+    console.log("Prepared profile data:", JSON.stringify(profileData, null, 2));
+
+    if (profile) {
+      console.log("Updating existing profile");
+      // Update existing profile
+      Object.assign(profile, profileData);
       await profile.save();
+      console.log("Profile updated successfully");
     } else {
+      console.log("Creating new profile");
       // Create new profile
-      profile = new UserProfile({
-        userId,
-        name: name.trim(),
-        phone: phone.trim(),
-        profilePicture: profilePicture || null,
-        department,
-        jobTitle,
-        shift,
-        workingHours,
-        skills: skills || [],
-        yearsWorked: parseInt(yearsWorked) || 0,
-        specialTraining: specialTraining || [],
-        shiftFlexibility: shiftFlexibility || false,
-        emergencyContact: {
-          name: emergencyContact.name.trim(),
-          relationship: emergencyContact.relationship.trim(),
-          phone: emergencyContact.phone.trim()
-        },
-        notes: notes || '',
-        profileComplete: true
-      });
-
+      profile = new UserProfile(profileData);
       await profile.save();
+      console.log("New profile created successfully");
     }
 
-    res.status(200).json({
+    const responseData = {
       success: true,
-      message: "Profile updated successfully",
+      message: profile.isNew === false ? "Profile updated successfully" : "Profile created successfully",
       profile: {
         id: profile._id,
         userId: profile.userId,
         name: profile.name,
         department: profile.department,
         jobTitle: profile.jobTitle,
-        profileComplete: profile.profileComplete
+        profileComplete: profile.profileComplete,
+        lastUpdated: profile.lastUpdated
       }
-    });
+    };
+
+    console.log("Sending success response:", responseData);
+    res.status(200).json(responseData);
 
   } catch (error) {
-    console.error("Update profile error:", error);
+    console.error("=== Profile Update Error ===");
+    console.error("Error name:", error.name);
+    console.error("Error message:", error.message);
+    console.error("Error stack:", error.stack);
     
     if (error.name === 'ValidationError') {
+      console.error("Mongoose validation errors:", error.errors);
       const errorMessages = Object.values(error.errors).map(err => err.message);
       return res.status(400).json({
         success: false,
-        message: errorMessages.join(', ')
+        message: `Validation error: ${errorMessages.join(', ')}`,
+        validationErrors: error.errors
+      });
+    }
+    
+    if (error.name === 'CastError') {
+      console.error("MongoDB cast error:", error);
+      return res.status(400).json({
+        success: false,
+        message: "Invalid data format provided"
+      });
+    }
+
+    if (error.code === 11000) {
+      console.error("MongoDB duplicate key error:", error.keyPattern);
+      return res.status(400).json({
+        success: false,
+        message: "Profile already exists for this user"
       });
     }
     
     res.status(500).json({
       success: false,
-      message: "Failed to update profile"
+      message: "Failed to update profile",
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 });
 
-
-// Add these routes at the bottom of your file, before module.exports = router;
-
-// 🔹 ATTENDANCE ROUTES
-
-// Middleware to extract user from JWT token
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    return res.status(401).json({
+// 🔹 Test Database Connection Route (Add this for debugging)
+router.get("/test-db", async (req, res) => {
+  try {
+    console.log("=== Database Test ===");
+    
+    // Test User model
+    const userCount = await User.countDocuments();
+    console.log("User count:", userCount);
+    
+    // Test UserProfile model
+    const profileCount = await UserProfile.countDocuments();
+    console.log("Profile count:", profileCount);
+    
+    // Test sample user lookup
+    const sampleUser = await User.findOne().limit(1);
+    console.log("Sample user found:", !!sampleUser);
+    
+    // Test model loading
+    console.log("User model name:", User.modelName);
+    console.log("UserProfile model name:", UserProfile.modelName);
+    
+    res.json({
+      success: true,
+      database: "connected",
+      collections: {
+        users: userCount,
+        profiles: profileCount
+      },
+      models: {
+        User: User.modelName,
+        UserProfile: UserProfile.modelName
+      },
+      sampleUser: sampleUser ? {
+        id: sampleUser._id,
+        username: sampleUser.username,
+        email: sampleUser.email,
+        role: sampleUser.role
+      } : null,
+      environment: process.env.NODE_ENV || 'development'
+    });
+    
+  } catch (error) {
+    console.error("Database test error:", error);
+    res.status(500).json({
       success: false,
-      message: "Access token required"
+      error: error.message,
+      database: "error",
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
+});
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({
-        success: false,
-        message: "Invalid or expired token"
-      });
-    }
-    req.user = user;
-    next();
-  });
-};
+// 🔹 ATTENDANCE ROUTES
 
 // Mark Check-in
 router.post("/attendance/check-in", authenticateToken, async (req, res) => {
@@ -1440,6 +1575,7 @@ router.get("/attendance/admin/pending-leaves", async (req, res) => {
     });
   }
 });
+
 // ADMIN ROUTES - Get All Attendance Records
 router.get("/attendance/admin/all", authenticateToken, async (req, res) => {
   try {
@@ -1541,4 +1677,5 @@ router.get("/attendance/admin/today-summary", authenticateToken, async (req, res
     });
   }
 });
+
 module.exports = router;
