@@ -20,7 +20,7 @@ const AdminScheduleManagement = () => {
     notes: ''
   });
   const navigate = useNavigate();
-  const API_BASE = 'http://localhost:5000';
+  const API_BASE = 'https://staff-management-upgraded.onrender.com';
 
   const departments = ['Cleaning Staff', 'Event Helpers', 'Tea and Snack Staff', 'Maintenance Staff', 'Outdoor Cleaners', 'Office Helpers'];
   

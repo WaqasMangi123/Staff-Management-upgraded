@@ -36,7 +36,7 @@ const ResetPassword = () => {
     const validateToken = async () => {
       try {
         const response = await axios.post(
-          'https://parksy-backend.onrender.com/api/auth/validate-reset-token', 
+          'https://staff-management-upgraded.onrender.com/api/auth/validate-reset-token', 
           { token }
         );
         
@@ -108,7 +108,7 @@ const ResetPassword = () => {
 
     try {
       const response = await axios.post(
-        'https://parksy-backend.onrender.com/api/auth/reset-password',
+        'https://staff-management-upgraded.onrender.com/api/auth/reset-password',
         { 
           token, 
           newPassword: formData.newPassword 

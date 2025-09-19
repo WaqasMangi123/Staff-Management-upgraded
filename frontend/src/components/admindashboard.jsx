@@ -30,7 +30,7 @@ const AdminDashboard = () => {
         return;
       }
 
-      const response = await axios.get('http://localhost:5000/api/admin/profile', {
+      const response = await axios.get('https://staff-management-upgraded.onrender.com/api/admin/profile', {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -57,16 +57,16 @@ const AdminDashboard = () => {
       if (!token) return;
 
       const [staffRes, alertsRes, leavesRes, tasksRes] = await Promise.allSettled([
-        axios.get('http://localhost:5000/api/admin/all-staff', {
+        axios.get('https://staff-management-upgraded.onrender.com/api/admin/all-staff', {
           headers: { 'Authorization': `Bearer ${token}` }
         }),
-        axios.get('http://localhost:5000/api/alerts/admin/statistics', {
+        axios.get('https://staff-management-upgraded.onrender.com/api/alerts/admin/statistics', {
           headers: { 'Authorization': `Bearer ${token}` }
         }),
-        axios.get('http://localhost:5000/api/auth/attendance/admin/pending-leaves', {
+        axios.get('https://staff-management-upgraded.onrender.com/api/auth/attendance/admin/pending-leaves', {
           headers: { 'Authorization': `Bearer ${token}` }
         }),
-        axios.get('http://localhost:5000/api/tasks/admin/all', {
+        axios.get('https://staff-management-upgraded.onrender.com/api/tasks/admin/all', {
           headers: { 'Authorization': `Bearer ${token}` }
         }).catch(() => ({ value: { data: { success: false } } }))
       ]);
@@ -109,7 +109,7 @@ const AdminDashboard = () => {
       const token = localStorage.getItem('adminToken');
 
       if (token) {
-        await axios.post('http://localhost:5000/api/admin/logout', {}, {
+        await axios.post('https://staff-management-upgraded.onrender.com/api/admin/logout', {}, {
           headers: {
             'Authorization': `Bearer ${token}`
           }

@@ -89,7 +89,7 @@ function Login({ setAuth }) {
       };
 
       const response = await axios.post(
-        "https://parksy-backend.onrender.com/api/auth/login",
+        "https://staff-management-upgraded.onrender.com/api/auth/login",
         loginData,
         {
           headers: { "Content-Type": "application/json" },
@@ -314,7 +314,7 @@ function Login({ setAuth }) {
       }
 
       const response = await axios.post(
-        "https://parksy-backend.onrender.com/api/auth/resend-verification",
+        "https://staff-management-upgraded.onrender.com/api/auth/resend-verification",
         { email },
         {
           headers: { "Content-Type": "application/json" },

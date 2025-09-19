@@ -9,7 +9,7 @@ const UserSchedule = () => {
   const [view, setView] = useState('upcoming'); // 'upcoming', 'today', 'all'
   const [stats, setStats] = useState(null);
   const navigate = useNavigate();
-  const API_BASE = 'http://localhost:5000';
+  const API_BASE = 'https://staff-management-upgraded.onrender.com';
 
   useEffect(() => {
     loadMySchedule();

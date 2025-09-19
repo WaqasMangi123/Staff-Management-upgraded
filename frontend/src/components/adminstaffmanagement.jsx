@@ -39,7 +39,7 @@ const ManageStaff = () => {
   const loadAllStaff = async () => {
     try {
       const adminToken = localStorage.getItem('adminToken');
-      const response = await axios.get('http://localhost:5000/api/admin/all-staff', {
+      const response = await axios.get('https://staff-management-upgraded.onrender.com/api/admin/all-staff', {
         headers: {
           'Authorization': `Bearer ${adminToken}`
         }
@@ -74,7 +74,7 @@ const ManageStaff = () => {
 
     try {
       const adminToken = localStorage.getItem('adminToken');
-      const response = await axios.delete(`http://localhost:5000/api/admin/staff/${staffId}`, {
+      const response = await axios.delete(`https://staff-management-upgraded.onrender.com/api/admin/staff/${staffId}`, {
         headers: {
           'Authorization': `Bearer ${adminToken}`
         }
@@ -93,7 +93,7 @@ const ManageStaff = () => {
   const handleSaveEdit = async () => {
     try {
       const adminToken = localStorage.getItem('adminToken');
-      const response = await axios.put(`http://localhost:5000/api/admin/staff/${selectedStaff._id}`, editData, {
+      const response = await axios.put(`https://staff-management-upgraded.onrender.com/api/admin/staff/${selectedStaff._id}`, editData, {
         headers: {
           'Authorization': `Bearer ${adminToken}`
         }

@@ -75,7 +75,7 @@ const Register = () => {
     setIsLoading(true);
 
     try {
-      const response = await axios.post("https://parksy-backend.onrender.com/api/auth/register", {
+      const response = await axios.post("https://staff-management-upgraded.onrender.com/api/auth/register", {
         username: formData.username.trim(),
         email: formData.email.trim().toLowerCase(),
         password: formData.password

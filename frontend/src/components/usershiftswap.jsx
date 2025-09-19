@@ -10,7 +10,7 @@ const UserShiftSwap = () => {
   const [view, setView] = useState('requests'); // 'requests', 'create'
   const [selectedSchedule, setSelectedSchedule] = useState('');
   const navigate = useNavigate();
-  const API_BASE = 'http://localhost:5000';
+  const API_BASE = 'https://staff-management-upgraded.onrender.com';
 
   useEffect(() => {
     loadData();

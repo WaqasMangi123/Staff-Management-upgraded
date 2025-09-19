@@ -32,7 +32,7 @@ const AdminAlertsManagement = () => {
   const navigate = useNavigate();
 
   // Use full URL to backend - same as your working Leave Management
-  const API_BASE = 'http://localhost:5000';
+  const API_BASE = 'https://staff-management-upgraded.onrender.com';
 
   const alertTypes = ['general', 'shift_reminder', 'task_assigned', 'swap_request', 'emergency_cleanup', 'attendance_missing'];
   const priorities = ['low', 'medium', 'high', 'urgent'];

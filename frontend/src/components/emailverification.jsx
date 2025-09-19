@@ -172,7 +172,7 @@ function VerifyEmail() {
     setSuccessMessage("");
 
     try {
-      const response = await fetch("https://parksy-backend.onrender.com/api/auth/verify", {
+      const response = await fetch("https://staff-management-upgraded.onrender.com/api/auth/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: email.trim(), verificationCode: verificationCode.trim() }),

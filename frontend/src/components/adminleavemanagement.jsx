@@ -13,7 +13,7 @@ const AdminLeaveManagement = () => {
   const navigate = useNavigate();
 
   // Use full URL to backend - change this to your backend URL
-  const API_BASE = 'http://localhost:5000';
+  const API_BASE = 'https://staff-management-upgraded.onrender.com';
 
   useEffect(() => {
     const adminToken = localStorage.getItem('adminToken');

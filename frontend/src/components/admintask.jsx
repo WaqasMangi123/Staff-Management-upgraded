@@ -20,7 +20,7 @@ const AdminTaskManagement = () => {
   });
   const navigate = useNavigate();
 
-  const API_BASE = 'http://localhost:5000';
+  const API_BASE = 'https://staff-management-upgraded.onrender.com';
   const categories = ['Security', 'Maintenance', 'Cleaning', 'Administrative', 'Customer Service', 'Inspection', 'Training', 'Emergency Response'];
   const priorities = ['low', 'medium', 'high', 'urgent'];
 

@@ -92,20 +92,61 @@ const UserProfile = () => {
 
   const loadProfileData = async (userId, token) => {
     try {
-      const response = await axios.get(`http://localhost:5000/api/auth/profile/${userId}`, {
+      const response = await axios.get(`https://staff-management-upgraded.onrender.com/api/auth/profile/${userId}`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
       });
 
-      if (response.data.success && response.data.profile) {
-        const profile = response.data.profile;
-        setProfileData(profile);
-        setIsProfileComplete(true);
+      // Check if profile exists (profile will be null if it doesn't exist)
+      if (response.data.success) {
+        if (response.data.profile) {
+          // Profile exists, load the data
+          const profile = response.data.profile;
+          
+          setProfileData({
+            name: profile.name || '',
+            phone: profile.phone || '',
+            profilePicture: profile.profilePicture || '',
+            department: profile.department || '',
+            jobTitle: profile.jobTitle || '',
+            shift: profile.shift || '',
+            workingHours: {
+              start: profile.workingHours?.start || '',
+              end: profile.workingHours?.end || ''
+            },
+            skills: profile.skills || [],
+            yearsWorked: profile.yearsWorked || '',
+            specialTraining: profile.specialTraining && profile.specialTraining.length > 0 
+              ? profile.specialTraining 
+              : [''],
+            shiftFlexibility: profile.shiftFlexibility || false,
+            emergencyContact: {
+              name: profile.emergencyContact?.name || '',
+              relationship: profile.emergencyContact?.relationship || '',
+              phone: profile.emergencyContact?.phone || ''
+            },
+            notes: profile.notes || ''
+          });
+          
+          setIsProfileComplete(true);
+        } else {
+          // No profile exists, keep empty form for creation
+          console.log('No profile found, ready to create new one');
+          setIsProfileComplete(false);
+        }
       }
     } catch (error) {
-      // Profile doesn't exist yet, keep default empty form
-      console.log('No existing profile found, showing empty form');
+      // Handle errors gracefully
+      console.error('Error loading profile:', error);
+      
+      // Don't crash the app, just show empty form
+      setIsProfileComplete(false);
+      
+      // Only show error toast for actual errors, not for missing profiles
+      if (error.response && error.response.status !== 404 && error.response.status !== 200) {
+        toast.error('Error loading profile data');
+      }
     }
   };
 
@@ -164,7 +205,28 @@ const UserProfile = () => {
     try {
       const token = localStorage.getItem('token');
       
-      // Clean up special training array
+      // Validate required fields before submission
+      if (!profileData.name || !profileData.phone || !profileData.department || 
+          !profileData.jobTitle || !profileData.shift) {
+        toast.error('Please fill in all required fields');
+        setLoading(false);
+        return;
+      }
+
+      if (!profileData.workingHours.start || !profileData.workingHours.end) {
+        toast.error('Please fill in working hours');
+        setLoading(false);
+        return;
+      }
+
+      if (!profileData.emergencyContact.name || !profileData.emergencyContact.relationship || 
+          !profileData.emergencyContact.phone) {
+        toast.error('Please fill in emergency contact information');
+        setLoading(false);
+        return;
+      }
+      
+      // Clean up special training array - remove empty strings
       const cleanedData = {
         ...profileData,
         userId: user.id,
@@ -172,21 +234,35 @@ const UserProfile = () => {
         yearsWorked: parseInt(profileData.yearsWorked) || 0
       };
 
-      const response = await axios.post('http://localhost:5000/api/auth/update-profile', cleanedData, {
-        headers: {
-          'Authorization': `Bearer ${token}`
+      // If no special training provided, send empty array
+      if (cleanedData.specialTraining.length === 0) {
+        cleanedData.specialTraining = [];
+      }
+
+      const response = await axios.post(
+        'https://staff-management-upgraded.onrender.com/api/auth/update-profile', 
+        cleanedData, 
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
         }
-      });
+      );
       
       if (response.data.success) {
         toast.success(isProfileComplete ? 'Profile updated successfully!' : 'Profile created successfully!');
         setIsProfileComplete(true);
       }
     } catch (error) {
+      console.error('Profile update error:', error);
+      
       if (error.response && error.response.data) {
         toast.error(error.response.data.message || 'Profile update failed');
+      } else if (error.request) {
+        toast.error('Network error. Please check your connection.');
       } else {
-        toast.error('Network error. Please try again.');
+        toast.error('An error occurred. Please try again.');
       }
     } finally {
       setLoading(false);
@@ -200,7 +276,16 @@ const UserProfile = () => {
   };
 
   if (!user) {
-    return <div>Loading...</div>;
+    return (
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'center', 
+        alignItems: 'center', 
+        height: '100vh' 
+      }}>
+        <div>Loading...</div>
+      </div>
+    );
   }
 
   return (
