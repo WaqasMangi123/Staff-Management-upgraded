@@ -683,6 +683,29 @@ router.get("/profile/:userId", async (req, res) => {
 });
 
 // 🔹 Update/Create User Profile
+// 🔹 Get User Profile
+router.get("/profile/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    // Try to find profile with string userId first
+    const profile = await UserProfile.findOne({ userId: userId });
+    
+    res.status(200).json({
+      success: true,
+      profile: profile || null
+    });
+
+  } catch (error) {
+    console.error("Get profile error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch profile"
+    });
+  }
+});
+
+// 🔹 Update/Create User Profile
 router.post("/update-profile", async (req, res) => {
   try {
     const mongoose = require('mongoose');
@@ -702,6 +725,8 @@ router.post("/update-profile", async (req, res) => {
       emergencyContact,
       notes
     } = req.body;
+
+    console.log("Received userId:", userId, "Type:", typeof userId);
 
     // Input validation
     if (!userId || !name || !phone || !department || !jobTitle || !shift) {
@@ -727,19 +752,29 @@ router.post("/update-profile", async (req, res) => {
       });
     }
 
-    // Convert string userId to ObjectId
-    let userObjectId;
-    try {
-      userObjectId = mongoose.Types.ObjectId(userId);
-    } catch (err) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid user ID format"
-      });
+    // Handle both string and ObjectId formats
+    let searchId;
+    
+    // Check if it's already a valid ObjectId string (24 hex chars)
+    if (/^[a-f\d]{24}$/i.test(userId)) {
+      try {
+        searchId = mongoose.Types.ObjectId(userId);
+      } catch (err) {
+        console.log("ObjectId conversion failed, using string:", userId);
+        searchId = userId;
+      }
+    } else {
+      // Not a valid ObjectId format, use as string
+      searchId = userId;
     }
 
-    // Check if profile exists
-    let profile = await UserProfile.findOne({ userId: userObjectId });
+    // Try to find with ObjectId first, then with string
+    let profile = await UserProfile.findOne({ userId: searchId });
+    
+    if (!profile && searchId !== userId) {
+      // If not found with ObjectId, try with original string
+      profile = await UserProfile.findOne({ userId: userId });
+    }
 
     if (profile) {
       // Update existing profile
@@ -765,9 +800,9 @@ router.post("/update-profile", async (req, res) => {
 
       await profile.save();
     } else {
-      // Create new profile - IMPORTANT: Use userObjectId here
+      // Create new profile - use the same ID format
       profile = new UserProfile({
-        userId: userObjectId,  // THIS IS THE KEY CHANGE
+        userId: searchId,  // Use the processed ID
         name: name.trim(),
         phone: phone.trim(),
         profilePicture: profilePicture || null,
@@ -806,6 +841,7 @@ router.post("/update-profile", async (req, res) => {
 
   } catch (error) {
     console.error("Update profile error:", error);
+    console.error("Error details:", error.message);
     
     if (error.name === 'ValidationError') {
       const errorMessages = Object.values(error.errors).map(err => err.message);
@@ -817,7 +853,8 @@ router.post("/update-profile", async (req, res) => {
     
     res.status(500).json({
       success: false,
-      message: "Failed to update profile"
+      message: "Failed to update profile",
+      error: error.message
     });
   }
 });
