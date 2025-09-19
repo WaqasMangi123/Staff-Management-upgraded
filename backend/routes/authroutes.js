@@ -650,13 +650,17 @@ router.delete("/users/:id", async (req, res) => {
   }
 });
 // 🔹 Get User Profile
-// 🔹 Get User Profile - FIXED VERSION
+// 🔹 Get User Profile - COMPLETE WORKING VERSION
 router.get("/profile/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
+    console.log("Fetching profile for userId:", userId);
     
-    // Since schema now uses String, just search with the string directly
-    const profile = await UserProfile.findOne({ userId: userId });
+    // Convert to string and search
+    const userIdString = String(userId);
+    const profile = await UserProfile.findOne({ userId: userIdString });
+    
+    console.log("Profile found:", profile ? "Yes" : "No");
     
     res.status(200).json({
       success: true,
@@ -672,7 +676,7 @@ router.get("/profile/:userId", async (req, res) => {
   }
 });
 
-// 🔹 Update/Create User Profile - FIXED VERSION
+// 🔹 Update/Create User Profile - COMPLETE WORKING VERSION
 router.post("/update-profile", async (req, res) => {
   try {
     const {
@@ -692,11 +696,14 @@ router.post("/update-profile", async (req, res) => {
       notes
     } = req.body;
 
+    console.log("Received profile update request for userId:", userId);
+    console.log("Request body keys:", Object.keys(req.body));
+
     // Input validation
     if (!userId || !name || !phone || !department || !jobTitle || !shift) {
       return res.status(400).json({
         success: false,
-        message: "Required fields: name, phone, department, jobTitle, shift"
+        message: "Required fields: userId, name, phone, department, jobTitle, shift"
       });
     }
 
@@ -716,8 +723,24 @@ router.post("/update-profile", async (req, res) => {
       });
     }
 
-    // Since userId is now String in schema, use it directly
-    let profile = await UserProfile.findOne({ userId: userId });
+    // Ensure userId is a string
+    const userIdString = String(userId);
+    
+    // Check if user exists in User collection
+    const userExists = await User.findById(userIdString);
+    if (!userExists) {
+      console.log("User not found with ID:", userIdString);
+      return res.status(404).json({
+        success: false,
+        message: "User not found with provided ID"
+      });
+    }
+
+    console.log("User found:", userExists.email);
+
+    // Find existing profile using string userId
+    let profile = await UserProfile.findOne({ userId: userIdString });
+    console.log("Existing profile found:", profile ? "Yes" : "No");
 
     if (profile) {
       // Update existing profile
@@ -727,7 +750,10 @@ router.post("/update-profile", async (req, res) => {
       profile.department = department;
       profile.jobTitle = jobTitle;
       profile.shift = shift;
-      profile.workingHours = workingHours;
+      profile.workingHours = {
+        start: workingHours.start,
+        end: workingHours.end
+      };
       profile.skills = skills || [];
       profile.yearsWorked = parseInt(yearsWorked) || 0;
       profile.specialTraining = specialTraining || [];
@@ -742,17 +768,22 @@ router.post("/update-profile", async (req, res) => {
       profile.lastUpdated = new Date();
 
       await profile.save();
+      console.log("Profile updated successfully");
+      
     } else {
-      // Create new profile - use string userId directly
-      profile = new UserProfile({
-        userId: userId,  // Now using String directly
+      // Create new profile with string userId
+      const profileData = {
+        userId: userIdString,  // Ensure it's a string
         name: name.trim(),
         phone: phone.trim(),
         profilePicture: profilePicture || null,
         department,
         jobTitle,
         shift,
-        workingHours,
+        workingHours: {
+          start: workingHours.start,
+          end: workingHours.end
+        },
         skills: skills || [],
         yearsWorked: parseInt(yearsWorked) || 0,
         specialTraining: specialTraining || [],
@@ -764,14 +795,19 @@ router.post("/update-profile", async (req, res) => {
         },
         notes: notes || '',
         profileComplete: true
-      });
+      };
 
+      console.log("Creating new profile with userId:", userIdString);
+      
+      profile = new UserProfile(profileData);
       await profile.save();
+      
+      console.log("Profile created successfully");
     }
 
     res.status(200).json({
       success: true,
-      message: "Profile updated successfully",
+      message: profile ? "Profile updated successfully" : "Profile created successfully",
       profile: {
         id: profile._id,
         userId: profile.userId,
@@ -784,19 +820,32 @@ router.post("/update-profile", async (req, res) => {
 
   } catch (error) {
     console.error("Update profile error:", error);
+    console.error("Error details:", error.message);
+    console.error("Error stack:", error.stack);
     
     if (error.name === 'ValidationError') {
       const errorMessages = Object.values(error.errors).map(err => err.message);
+      console.error("Validation errors:", errorMessages);
       return res.status(400).json({
         success: false,
-        message: errorMessages.join(', ')
+        message: errorMessages.join(', '),
+        validationErrors: error.errors
+      });
+    }
+    
+    if (error.code === 11000) {
+      console.error("Duplicate key error:", error.keyValue);
+      return res.status(400).json({
+        success: false,
+        message: "A profile already exists for this user",
+        duplicateField: error.keyValue
       });
     }
     
     res.status(500).json({
       success: false,
       message: "Failed to update profile",
-      error: error.message
+      error: process.env.NODE_ENV === 'development' ? error.message : "Internal server error"
     });
   }
 });
