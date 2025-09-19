@@ -656,16 +656,10 @@ router.get("/profile/:userId", async (req, res) => {
     
     const profile = await UserProfile.findOne({ userId });
     
-    if (!profile) {
-      return res.status(404).json({
-        success: false,
-        message: "Profile not found"
-      });
-    }
-
+    // Return success even if profile doesn't exist
     res.status(200).json({
       success: true,
-      profile
+      profile: profile || null
     });
 
   } catch (error) {
@@ -804,7 +798,6 @@ router.post("/update-profile", async (req, res) => {
     });
   }
 });
-
 
 // Add these routes at the bottom of your file, before module.exports = router;
 
