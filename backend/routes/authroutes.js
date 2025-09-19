@@ -652,11 +652,22 @@ router.delete("/users/:id", async (req, res) => {
 // 🔹 Get User Profile
 router.get("/profile/:userId", async (req, res) => {
   try {
+    const mongoose = require('mongoose');
     const { userId } = req.params;
     
-    const profile = await UserProfile.findOne({ userId });
+    // Convert string to ObjectId
+    let userObjectId;
+    try {
+      userObjectId = mongoose.Types.ObjectId(userId);
+    } catch (err) {
+      return res.status(200).json({
+        success: true,
+        profile: null
+      });
+    }
     
-    // Return success even if profile doesn't exist
+    const profile = await UserProfile.findOne({ userId: userObjectId });
+    
     res.status(200).json({
       success: true,
       profile: profile || null
@@ -674,6 +685,7 @@ router.get("/profile/:userId", async (req, res) => {
 // 🔹 Update/Create User Profile
 router.post("/update-profile", async (req, res) => {
   try {
+    const mongoose = require('mongoose');
     const {
       userId,
       name,
@@ -715,8 +727,19 @@ router.post("/update-profile", async (req, res) => {
       });
     }
 
+    // Convert string userId to ObjectId
+    let userObjectId;
+    try {
+      userObjectId = mongoose.Types.ObjectId(userId);
+    } catch (err) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID format"
+      });
+    }
+
     // Check if profile exists
-    let profile = await UserProfile.findOne({ userId });
+    let profile = await UserProfile.findOne({ userId: userObjectId });
 
     if (profile) {
       // Update existing profile
@@ -742,9 +765,9 @@ router.post("/update-profile", async (req, res) => {
 
       await profile.save();
     } else {
-      // Create new profile
+      // Create new profile - IMPORTANT: Use userObjectId here
       profile = new UserProfile({
-        userId,
+        userId: userObjectId,  // THIS IS THE KEY CHANGE
         name: name.trim(),
         phone: phone.trim(),
         profilePicture: profilePicture || null,
@@ -798,7 +821,6 @@ router.post("/update-profile", async (req, res) => {
     });
   }
 });
-
 // Add these routes at the bottom of your file, before module.exports = router;
 
 // 🔹 ATTENDANCE ROUTES
