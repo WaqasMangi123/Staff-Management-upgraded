@@ -48,7 +48,7 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Enhanced Nodemailer Setup with better error handling
+// Enhanced Nodemailer Setup with Render-compatible configuration
 const transporter = nodemailer.createTransport({
   service: "gmail",
   host: process.env.EMAIL_HOST || "smtp.gmail.com",
@@ -59,11 +59,14 @@ const transporter = nodemailer.createTransport({
     pass: EMAIL_PASS 
   },
   tls: {
-    rejectUnauthorized: false
+    rejectUnauthorized: false,
+    ciphers: 'SSLv3'
   },
-  connectionTimeout: 10000, // 10 seconds
-  greetingTimeout: 5000, // 5 seconds
-  socketTimeout: 10000 // 10 seconds
+  connectionTimeout: 30000, // 30 seconds for slow connections
+  greetingTimeout: 15000, // 15 seconds
+  socketTimeout: 30000, // 30 seconds
+  debug: process.env.NODE_ENV === 'development', // Enable debug in development
+  logger: process.env.NODE_ENV === 'development' // Enable logger in development
 });
 
 // Test transporter connection on startup
