@@ -17,6 +17,13 @@ const ADMIN_EMAIL = process.env.ADMIN_EMAIL || EMAIL_USER;
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 
+// Debug email configuration on startup
+console.log("📧 Email Configuration:");
+console.log("EMAIL_USER:", EMAIL_USER ? "✓ Set" : "❌ Not set");
+console.log("EMAIL_PASS:", EMAIL_PASS ? "✓ Set" : "❌ Not set");
+console.log("ADMIN_EMAIL:", ADMIN_EMAIL);
+console.log("EMAIL_FROM:", EMAIL_FROM);
+
 // AUTHENTICATION MIDDLEWARE - MOVED TO TOP
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -41,11 +48,11 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Enhanced Nodemailer Setup
+// Enhanced Nodemailer Setup with better error handling
 const transporter = nodemailer.createTransport({
   service: "gmail",
   host: process.env.EMAIL_HOST || "smtp.gmail.com",
-  port: process.env.EMAIL_PORT || 587,
+  port: parseInt(process.env.EMAIL_PORT) || 587,
   secure: process.env.EMAIL_SECURE === 'true', // true for 465, false for other ports
   auth: { 
     user: EMAIL_USER, 
@@ -53,6 +60,18 @@ const transporter = nodemailer.createTransport({
   },
   tls: {
     rejectUnauthorized: false
+  },
+  connectionTimeout: 10000, // 10 seconds
+  greetingTimeout: 5000, // 5 seconds
+  socketTimeout: 10000 // 10 seconds
+});
+
+// Test transporter connection on startup
+transporter.verify((error, success) => {
+  if (error) {
+    console.error('❌ Email transporter verification failed:', error.message);
+  } else {
+    console.log('✅ Email server is ready to send messages');
   }
 });
 
@@ -73,234 +92,343 @@ const sendVerificationEmail = async (email, verificationCode) => {
         </div>
       `,
     });
+    console.log('✅ Verification email sent to:', email);
   } catch (err) {
-    console.error("Email sending error:", err);
+    console.error("❌ Email sending error:", err);
     throw new Error("Failed to send verification email");
   }
 };
 
-// NEW: Send Leave Application Email to Admin
+// IMPROVED: Send Leave Application Email to Admin with timeout protection
 const sendLeaveApplicationEmail = async (userDetails, leaveDetails) => {
+  return new Promise((resolve) => {
+    // Set a timeout to prevent hanging
+    const emailTimeout = setTimeout(() => {
+      console.log('⚠️ Email sending timeout - resolving anyway');
+      resolve();
+    }, 15000); // 15 second timeout
+
+    const sendEmail = async () => {
+      try {
+        const leaveDate = new Date(leaveDetails.date).toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+
+        const daysUntil = Math.ceil((new Date(leaveDetails.date) - new Date()) / (1000 * 60 * 60 * 24));
+        const urgencyColor = daysUntil <= 2 ? '#dc3545' : daysUntil <= 7 ? '#ffc107' : '#28a745';
+        const urgencyText = daysUntil <= 2 ? 'URGENT' : daysUntil <= 7 ? 'SOON' : 'ADVANCE';
+
+        await transporter.sendMail({
+          from: EMAIL_FROM,
+          to: ADMIN_EMAIL,
+          subject: `🏖️ Leave Application - ${userDetails.name || userDetails.username} (${urgencyText})`,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
+              <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                
+                <!-- Header -->
+                <div style="text-align: center; margin-bottom: 30px;">
+                  <h1 style="color: #2563eb; margin: 0; font-size: 28px;">📋 New Leave Application</h1>
+                  <div style="background-color: ${urgencyColor}; color: white; padding: 8px 15px; border-radius: 20px; display: inline-block; margin-top: 10px; font-weight: bold; font-size: 12px;">
+                    ${urgencyText} - ${daysUntil} day(s) until leave
+                  </div>
+                </div>
+
+                <!-- Employee Details -->
+                <div style="background-color: #e7f3ff; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #2563eb;">
+                  <h3 style="color: #2563eb; margin: 0 0 15px 0; font-size: 18px;">👤 Employee Information</h3>
+                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    <div>
+                      <strong style="color: #495057;">Name:</strong><br>
+                      <span style="font-size: 16px;">${userDetails.name || userDetails.username}</span>
+                    </div>
+                    <div>
+                      <strong style="color: #495057;">Email:</strong><br>
+                      <span style="font-size: 16px;">${userDetails.email}</span>
+                    </div>
+                    <div>
+                      <strong style="color: #495057;">Department:</strong><br>
+                      <span style="font-size: 16px;">${userDetails.department || 'Not Set'}</span>
+                    </div>
+                    <div>
+                      <strong style="color: #495057;">Position:</strong><br>
+                      <span style="font-size: 16px;">${userDetails.jobTitle || 'Not Set'}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Leave Details -->
+                <div style="background-color: #fff3cd; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #ffc107;">
+                  <h3 style="color: #856404; margin: 0 0 15px 0; font-size: 18px;">📅 Leave Details</h3>
+                  <div style="margin-bottom: 15px;">
+                    <strong style="color: #495057;">Leave Date:</strong><br>
+                    <span style="font-size: 18px; font-weight: bold; color: #856404;">${leaveDate}</span>
+                  </div>
+                  <div style="margin-bottom: 15px;">
+                    <strong style="color: #495057;">Leave Type:</strong><br>
+                    <span style="font-size: 16px; background-color: #ffc107; color: #212529; padding: 4px 8px; border-radius: 4px; font-weight: bold;">
+                      ${leaveDetails.leaveType.charAt(0).toUpperCase() + leaveDetails.leaveType.slice(1)} Leave
+                    </span>
+                  </div>
+                  <div style="margin-bottom: 15px;">
+                    <strong style="color: #495057;">Reason:</strong><br>
+                    <div style="background-color: white; padding: 10px; border-radius: 4px; border: 1px solid #ffeaa7; margin-top: 5px;">
+                      <span style="font-size: 16px; line-height: 1.5;">${leaveDetails.reason}</span>
+                    </div>
+                  </div>
+                  <div>
+                    <strong style="color: #495057;">Application Submitted:</strong><br>
+                    <span style="font-size: 14px; color: #6c757d;">${new Date().toLocaleString()}</span>
+                  </div>
+                </div>
+
+                <!-- Action Required -->
+                <div style="background-color: #d4edda; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #28a745;">
+                  <h3 style="color: #155724; margin: 0 0 15px 0; font-size: 18px;">⚡ Action Required</h3>
+                  <p style="margin: 0 0 15px 0; color: #155724; font-size: 16px;">
+                    Please review and approve/reject this leave application in the admin dashboard.
+                  </p>
+                  <div style="text-align: center; margin-top: 20px;">
+                    <a href="${FRONTEND_URL}/admin/attendance" 
+                       style="background-color: #28a745; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px; display: inline-block;">
+                      📊 View in Admin Dashboard
+                    </a>
+                  </div>
+                </div>
+
+                ${daysUntil <= 7 ? `
+                <!-- Priority Indicator -->
+                <div style="background-color: #f8d7da; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #dc3545;">
+                  <h4 style="color: #721c24; margin: 0 0 10px 0;">⚠️ Priority Notice</h4>
+                  <p style="margin: 0; color: #721c24; font-size: 14px;">
+                    This leave is scheduled for ${daysUntil <= 2 ? 'very soon' : 'next week'}. 
+                    Please review and respond promptly to allow for proper planning.
+                  </p>
+                </div>
+                ` : ''}
+
+                <!-- Footer -->
+                <div style="text-align: center; border-top: 1px solid #dee2e6; padding-top: 20px; margin-top: 30px;">
+                  <p style="margin: 0; color: #6c757d; font-size: 14px;">
+                    This is an automated notification from the Staff Management System.<br>
+                    For any issues, please contact the system administrator.
+                  </p>
+                </div>
+              </div>
+            </div>
+          `,
+        });
+
+        clearTimeout(emailTimeout);
+        console.log(`✅ Leave application notification sent to admin for ${userDetails.username}`);
+        resolve();
+        
+      } catch (err) {
+        clearTimeout(emailTimeout);
+        console.error("❌ Failed to send leave application email:", err.message);
+        resolve(); // Don't throw error to prevent leave application from failing
+      }
+    };
+
+    sendEmail();
+  });
+};
+
+// IMPROVED: Send Leave Status Update Email to User with timeout protection
+const sendLeaveStatusEmail = async (userEmail, userName, leaveDetails, isApproved, adminNotes) => {
+  return new Promise((resolve) => {
+    const emailTimeout = setTimeout(() => {
+      console.log('⚠️ Status email timeout - resolving anyway');
+      resolve();
+    }, 15000);
+
+    const sendEmail = async () => {
+      try {
+        const leaveDate = new Date(leaveDetails.date).toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+
+        const statusColor = isApproved ? '#28a745' : '#dc3545';
+        const statusText = isApproved ? 'APPROVED' : 'REJECTED';
+        const statusIcon = isApproved ? '✅' : '❌';
+
+        await transporter.sendMail({
+          from: EMAIL_FROM,
+          to: userEmail,
+          subject: `${statusIcon} Leave Request ${statusText} - ${leaveDate}`,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
+              <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                
+                <!-- Header -->
+                <div style="text-align: center; margin-bottom: 30px;">
+                  <h1 style="color: ${statusColor}; margin: 0; font-size: 28px;">${statusIcon} Leave Request ${statusText}</h1>
+                </div>
+
+                <!-- Status Box -->
+                <div style="background-color: ${statusColor}; color: white; padding: 20px; border-radius: 8px; text-align: center; margin-bottom: 25px;">
+                  <h2 style="margin: 0; font-size: 24px;">Your leave request has been ${statusText.toLowerCase()}</h2>
+                </div>
+
+                <!-- Leave Details -->
+                <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
+                  <h3 style="color: #495057; margin: 0 0 15px 0;">📋 Leave Details</h3>
+                  <div style="margin-bottom: 10px;">
+                    <strong>Date:</strong> ${leaveDate}
+                  </div>
+                  <div style="margin-bottom: 10px;">
+                    <strong>Type:</strong> ${leaveDetails.leaveType.charAt(0).toUpperCase() + leaveDetails.leaveType.slice(1)} Leave
+                  </div>
+                  <div style="margin-bottom: 10px;">
+                    <strong>Your Reason:</strong> ${leaveDetails.reason}
+                  </div>
+                  <div>
+                    <strong>Decision Date:</strong> ${new Date().toLocaleDateString()}
+                  </div>
+                </div>
+
+                ${adminNotes ? `
+                <!-- Admin Notes -->
+                <div style="background-color: #e9ecef; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
+                  <h3 style="color: #495057; margin: 0 0 15px 0;">💬 Admin Notes</h3>
+                  <p style="margin: 0; font-style: italic; color: #6c757d;">"${adminNotes}"</p>
+                </div>
+                ` : ''}
+
+                <!-- Footer -->
+                <div style="text-align: center; border-top: 1px solid #dee2e6; padding-top: 20px;">
+                  <p style="margin: 0; color: #6c757d; font-size: 14px;">
+                    This notification was sent from the Staff Management System.<br>
+                    For questions, please contact your supervisor or HR department.
+                  </p>
+                </div>
+              </div>
+            </div>
+          `,
+        });
+
+        clearTimeout(emailTimeout);
+        console.log(`✅ Leave status email sent to ${userEmail} - Status: ${statusText}`);
+        resolve();
+        
+      } catch (err) {
+        clearTimeout(emailTimeout);
+        console.error("❌ Failed to send leave status email:", err.message);
+        resolve();
+      }
+    };
+
+    sendEmail();
+  });
+};
+
+// ADD: Simple leave email test endpoint
+router.post("/test-leave-email", async (req, res) => {
   try {
-    const leaveDate = new Date(leaveDetails.date).toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
+    const { type = 'application' } = req.body; // 'application' or 'status'
+    
+    console.log(`🧪 Testing ${type} email...`);
+    
+    const testUserDetails = {
+      username: 'TestUser',
+      email: ADMIN_EMAIL, // Send to admin email for testing
+      name: 'Test Employee',
+      department: 'IT Department',
+      jobTitle: 'Developer'
+    };
+
+    const testLeaveDetails = {
+      date: '2025-10-25',
+      leaveType: 'vacation',
+      reason: 'This is a test leave application to verify email functionality'
+    };
+
+    if (type === 'application') {
+      console.log('📧 Sending test leave application email...');
+      await sendLeaveApplicationEmail(testUserDetails, testLeaveDetails);
+      res.json({ 
+        success: true, 
+        message: "Test leave application email sent successfully",
+        sentTo: ADMIN_EMAIL
+      });
+    } else {
+      console.log('📧 Sending test leave status email...');
+      await sendLeaveStatusEmail(
+        ADMIN_EMAIL,
+        'TestUser',
+        testLeaveDetails,
+        true, // approved
+        'This is a test approval email'
+      );
+      res.json({ 
+        success: true, 
+        message: "Test leave status email sent successfully",
+        sentTo: ADMIN_EMAIL
+      });
+    }
+    
+  } catch (error) {
+    console.error("❌ Test leave email failed:", error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      details: error.toString()
     });
+  }
+});
 
-    const daysUntil = Math.ceil((new Date(leaveDetails.date) - new Date()) / (1000 * 60 * 60 * 24));
-    const urgencyColor = daysUntil <= 2 ? '#dc3545' : daysUntil <= 7 ? '#ffc107' : '#28a745';
-    const urgencyText = daysUntil <= 2 ? 'URGENT' : daysUntil <= 7 ? 'SOON' : 'ADVANCE';
-
+// ADD: Test basic email functionality
+router.post("/test-email", async (req, res) => {
+  try {
+    console.log("🧪 Testing email configuration...");
+    console.log("EMAIL_USER:", EMAIL_USER);
+    console.log("ADMIN_EMAIL:", ADMIN_EMAIL);
+    console.log("EMAIL_FROM:", EMAIL_FROM);
+    
     await transporter.sendMail({
       from: EMAIL_FROM,
       to: ADMIN_EMAIL,
-      subject: `🏖️ Leave Application - ${userDetails.name || userDetails.username} (${urgencyText})`,
+      subject: "🧪 Test Email - Staff Management System",
       html: `
-        <div style="font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
-          <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-            
-            <!-- Header -->
-            <div style="text-align: center; margin-bottom: 30px;">
-              <h1 style="color: #2563eb; margin: 0; font-size: 28px;">📋 New Leave Application</h1>
-              <div style="background-color: ${urgencyColor}; color: white; padding: 8px 15px; border-radius: 20px; display: inline-block; margin-top: 10px; font-weight: bold; font-size: 12px;">
-                ${urgencyText} - ${daysUntil} day(s) until leave
-              </div>
-            </div>
-
-            <!-- Employee Details -->
-            <div style="background-color: #e7f3ff; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #2563eb;">
-              <h3 style="color: #2563eb; margin: 0 0 15px 0; font-size: 18px;">👤 Employee Information</h3>
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                <div>
-                  <strong style="color: #495057;">Name:</strong><br>
-                  <span style="font-size: 16px;">${userDetails.name || userDetails.username}</span>
-                </div>
-                <div>
-                  <strong style="color: #495057;">Email:</strong><br>
-                  <span style="font-size: 16px;">${userDetails.email}</span>
-                </div>
-                <div>
-                  <strong style="color: #495057;">Department:</strong><br>
-                  <span style="font-size: 16px;">${userDetails.department || 'Not Set'}</span>
-                </div>
-                <div>
-                  <strong style="color: #495057;">Position:</strong><br>
-                  <span style="font-size: 16px;">${userDetails.jobTitle || 'Not Set'}</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Leave Details -->
-            <div style="background-color: #fff3cd; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #ffc107;">
-              <h3 style="color: #856404; margin: 0 0 15px 0; font-size: 18px;">📅 Leave Details</h3>
-              <div style="margin-bottom: 15px;">
-                <strong style="color: #495057;">Leave Date:</strong><br>
-                <span style="font-size: 18px; font-weight: bold; color: #856404;">${leaveDate}</span>
-              </div>
-              <div style="margin-bottom: 15px;">
-                <strong style="color: #495057;">Leave Type:</strong><br>
-                <span style="font-size: 16px; background-color: #ffc107; color: #212529; padding: 4px 8px; border-radius: 4px; font-weight: bold;">
-                  ${leaveDetails.leaveType.charAt(0).toUpperCase() + leaveDetails.leaveType.slice(1)} Leave
-                </span>
-              </div>
-              <div style="margin-bottom: 15px;">
-                <strong style="color: #495057;">Reason:</strong><br>
-                <div style="background-color: white; padding: 10px; border-radius: 4px; border: 1px solid #ffeaa7; margin-top: 5px;">
-                  <span style="font-size: 16px; line-height: 1.5;">${leaveDetails.reason}</span>
-                </div>
-              </div>
-              <div>
-                <strong style="color: #495057;">Application Submitted:</strong><br>
-                <span style="font-size: 14px; color: #6c757d;">${new Date().toLocaleString()}</span>
-              </div>
-            </div>
-
-            <!-- Action Required -->
-            <div style="background-color: #d4edda; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #28a745;">
-              <h3 style="color: #155724; margin: 0 0 15px 0; font-size: 18px;">⚡ Action Required</h3>
-              <p style="margin: 0 0 15px 0; color: #155724; font-size: 16px;">
-                Please review and approve/reject this leave application in the admin dashboard.
-              </p>
-              <div style="text-align: center; margin-top: 20px;">
-                <a href="${FRONTEND_URL}/admin/attendance" 
-                   style="background-color: #28a745; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px; display: inline-block;">
-                  📊 View in Admin Dashboard
-                </a>
-              </div>
-            </div>
-
-            <!-- Priority Indicator -->
-            ${daysUntil <= 7 ? `
-            <div style="background-color: #f8d7da; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #dc3545;">
-              <h4 style="color: #721c24; margin: 0 0 10px 0;">⚠️ Priority Notice</h4>
-              <p style="margin: 0; color: #721c24; font-size: 14px;">
-                This leave is scheduled for ${daysUntil <= 2 ? 'very soon' : 'next week'}. 
-                Please review and respond promptly to allow for proper planning.
-              </p>
-            </div>
-            ` : ''}
-
-            <!-- Footer -->
-            <div style="text-align: center; border-top: 1px solid #dee2e6; padding-top: 20px; margin-top: 30px;">
-              <p style="margin: 0; color: #6c757d; font-size: 14px;">
-                This is an automated notification from the Staff Management System.<br>
-                For any issues, please contact the system administrator.
-              </p>
-            </div>
-          </div>
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #28a745;">✅ Email Test Successful!</h2>
+          <p>This test email confirms that your email configuration is working correctly.</p>
+          <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
+          <p><strong>From:</strong> ${EMAIL_FROM}</p>
+          <p><strong>To:</strong> ${ADMIN_EMAIL}</p>
         </div>
-      `,
+      `
     });
-
-    console.log(`✅ Leave application notification sent to admin for ${userDetails.username}`);
     
-  } catch (err) {
-    console.error("❌ Failed to send leave application email:", err);
-    // Don't throw error to prevent leave application from failing due to email issues
-  }
-};
-
-// NEW: Send Leave Status Update Email to User
-const sendLeaveStatusEmail = async (userEmail, userName, leaveDetails, isApproved, adminNotes) => {
-  try {
-    const leaveDate = new Date(leaveDetails.date).toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
+    res.json({ 
+      success: true, 
+      message: "Test email sent successfully",
+      emailConfig: {
+        from: EMAIL_FROM,
+        to: ADMIN_EMAIL,
+        timestamp: new Date().toLocaleString()
+      }
     });
-
-    const statusColor = isApproved ? '#28a745' : '#dc3545';
-    const statusText = isApproved ? 'APPROVED' : 'REJECTED';
-    const statusIcon = isApproved ? '✅' : '❌';
-
-    await transporter.sendMail({
-      from: EMAIL_FROM,
-      to: userEmail,
-      subject: `${statusIcon} Leave Request ${statusText} - ${leaveDate}`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
-          <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-            
-            <!-- Header -->
-            <div style="text-align: center; margin-bottom: 30px;">
-              <h1 style="color: ${statusColor}; margin: 0; font-size: 28px;">${statusIcon} Leave Request ${statusText}</h1>
-            </div>
-
-            <!-- Status Box -->
-            <div style="background-color: ${statusColor}; color: white; padding: 20px; border-radius: 8px; text-align: center; margin-bottom: 25px;">
-              <h2 style="margin: 0; font-size: 24px;">Your leave request has been ${statusText.toLowerCase()}</h2>
-            </div>
-
-            <!-- Leave Details -->
-            <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
-              <h3 style="color: #495057; margin: 0 0 15px 0;">📋 Leave Details</h3>
-              <div style="margin-bottom: 10px;">
-                <strong>Date:</strong> ${leaveDate}
-              </div>
-              <div style="margin-bottom: 10px;">
-                <strong>Type:</strong> ${leaveDetails.leaveType.charAt(0).toUpperCase() + leaveDetails.leaveType.slice(1)} Leave
-              </div>
-              <div style="margin-bottom: 10px;">
-                <strong>Your Reason:</strong> ${leaveDetails.reason}
-              </div>
-              <div>
-                <strong>Decision Date:</strong> ${new Date().toLocaleDateString()}
-              </div>
-            </div>
-
-            ${adminNotes ? `
-            <!-- Admin Notes -->
-            <div style="background-color: #e9ecef; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
-              <h3 style="color: #495057; margin: 0 0 15px 0;">💬 Admin Notes</h3>
-              <p style="margin: 0; font-style: italic; color: #6c757d;">"${adminNotes}"</p>
-            </div>
-            ` : ''}
-
-            ${isApproved ? `
-            <!-- Approval Message -->
-            <div style="background-color: #d4edda; padding: 20px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #28a745;">
-              <h3 style="color: #155724; margin: 0 0 15px 0;">🎉 What's Next?</h3>
-              <ul style="color: #155724; margin: 0; padding-left: 20px;">
-                <li>Your leave has been approved and is now in the system</li>
-                <li>Please ensure any pending work is completed before your leave date</li>
-                <li>Coordinate with your team for any handovers needed</li>
-                <li>Enjoy your time off!</li>
-              </ul>
-            </div>
-            ` : `
-            <!-- Rejection Message -->
-            <div style="background-color: #f8d7da; padding: 20px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #dc3545;">
-              <h3 style="color: #721c24; margin: 0 0 15px 0;">📝 Next Steps</h3>
-              <ul style="color: #721c24; margin: 0; padding-left: 20px;">
-                <li>Your leave request has been declined</li>
-                <li>Please speak with your supervisor if you need clarification</li>
-                <li>You can submit a new request with different dates if needed</li>
-                <li>Contact HR for any questions about leave policies</li>
-              </ul>
-            </div>
-            `}
-
-            <!-- Footer -->
-            <div style="text-align: center; border-top: 1px solid #dee2e6; padding-top: 20px;">
-              <p style="margin: 0; color: #6c757d; font-size: 14px;">
-                This notification was sent from the Staff Management System.<br>
-                For questions, please contact your supervisor or HR department.
-              </p>
-            </div>
-          </div>
-        </div>
-      `,
+  } catch (error) {
+    console.error("❌ Test email failed:", error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      emailConfig: {
+        from: EMAIL_FROM,
+        to: ADMIN_EMAIL,
+        userConfigured: !!EMAIL_USER,
+        passConfigured: !!EMAIL_PASS
+      }
     });
-
-    console.log(`✅ Leave status email sent to ${userEmail} - Status: ${statusText}`);
-    
-  } catch (err) {
-    console.error("❌ Failed to send leave status email:", err);
   }
-};
+});
 
 // Helper function to get user's working hours from profile
 const getUserWorkingHours = async (userId) => {
@@ -312,7 +440,6 @@ const getUserWorkingHours = async (userId) => {
         end: profile.workingHours.end
       };
     }
-    // Default working hours if no profile found
     return {
       start: '09:00',
       end: '17:00'
@@ -333,14 +460,9 @@ const shouldAutoMarkAbsent = async (userId) => {
     const now = new Date();
     const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
     
-    // Parse working start time
     const [startHour, startMinute] = workingHours.start.split(':').map(Number);
     const workStartMinutes = startHour * 60 + startMinute;
-    
-    // Add 10 minute grace period
     const graceEndMinutes = workStartMinutes + 10;
-    
-    // Parse current time
     const [currentHour, currentMinute] = currentTime.split(':').map(Number);
     const currentMinutes = currentHour * 60 + currentMinute;
     
@@ -358,14 +480,9 @@ const shouldMarkAsAbsent = async (userId) => {
     const now = new Date();
     const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
     
-    // Parse working start time
     const [startHour, startMinute] = workingHours.start.split(':').map(Number);
     const workStartMinutes = startHour * 60 + startMinute;
-    
-    // Add significant delay threshold (e.g., 2+ hours after start time = absent)
     const absentThresholdMinutes = workStartMinutes + 120; // 2 hours after start time
-    
-    // Parse current time
     const [currentHour, currentMinute] = currentTime.split(':').map(Number);
     const currentMinutes = currentHour * 60 + currentMinute;
     
@@ -380,22 +497,18 @@ const shouldMarkAsAbsent = async (userId) => {
 const autoMarkAbsentUsers = async () => {
   try {
     const today = new Date().toISOString().split('T')[0];
-    
-    // Get all verified users who haven't marked attendance today
     const allUsers = await User.find({ 
       role: 'user', 
       verified: true 
     }).select('_id username email');
     
     for (const user of allUsers) {
-      // Check if user already has attendance marked for today
       const existingAttendance = await Attendance.findOne({ 
         userId: user._id, 
         date: today 
       });
       
       if (!existingAttendance) {
-        // Check if user should be auto-marked absent
         const shouldMarkAbsent = await shouldAutoMarkAbsent(user._id);
         
         if (shouldMarkAbsent) {
@@ -410,7 +523,7 @@ const autoMarkAbsentUsers = async () => {
             notes: `Auto-marked absent - No check-in after ${workingHours.start} + 10 min grace period`,
             absentReason: 'Auto-marked for late arrival',
             isManualEntry: false,
-            createdBy: null // System created
+            createdBy: null
           });
           
           await attendance.save();
@@ -433,8 +546,7 @@ router.use(async (req, res, next) => {
     }
   }
   
-  // Run auto-absent check more frequently for testing
-  if (Math.random() < 0.3) { // Run 30% of the time instead of 10%
+  if (Math.random() < 0.3) {
     autoMarkAbsentUsers().catch(err => console.error('Auto-absent check failed:', err));
   }
   
@@ -1172,13 +1284,11 @@ router.get("/attendance/debug-auto-absent", authenticateToken, async (req, res) 
     const now = new Date();
     const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
     
-    // Parse working start time
     const [startHour, startMinute] = workingHours.start.split(':').map(Number);
     const workStartMinutes = startHour * 60 + startMinute;
     const graceEndMinutes = workStartMinutes + 10;
     const absentThresholdMinutes = workStartMinutes + 120;
     
-    // Parse current time
     const [currentHour, currentMinute] = currentTime.split(':').map(Number);
     const currentMinutes = currentHour * 60 + currentMinute;
     
@@ -1248,11 +1358,9 @@ router.post("/attendance/check-in", authenticateToken, async (req, res) => {
       });
     }
 
-    // Check if already has attendance for today
     const existingAttendance = await Attendance.findOne({ userId, date: today });
     if (existingAttendance) {
       if (existingAttendance.status === 'absent' && !existingAttendance.checkIn) {
-        // If already marked absent, prevent check-in for very late arrivals
         const shouldBeAbsent = await shouldMarkAsAbsent(userId);
         
         if (shouldBeAbsent) {
@@ -1282,17 +1390,14 @@ router.post("/attendance/check-in", authenticateToken, async (req, res) => {
     const checkInTime = new Date();
     const { location, notes } = req.body;
     
-    // Get user's working hours from profile
     const workingHours = await getUserWorkingHours(userId);
     
-    // Calculate timing
     const [workStartHour, workStartMinute] = workingHours.start.split(':').map(Number);
     const workStartMinutes = workStartHour * 60 + workStartMinute;
     const checkInHour = checkInTime.getHours();
     const checkInMinutes = checkInTime.getMinutes();
     const checkInTotalMinutes = checkInHour * 60 + checkInMinutes;
     
-    // Calculate delay in minutes
     const delayMinutes = checkInTotalMinutes - workStartMinutes;
     const delayHours = Math.floor(delayMinutes / 60);
     const delayMins = delayMinutes % 60;
@@ -1300,9 +1405,7 @@ router.post("/attendance/check-in", authenticateToken, async (req, res) => {
     let status = 'present';
     let message = `Checked in successfully at ${checkInTime.toLocaleTimeString()}`;
     
-    // Enhanced logic: 2+ hours late = absent, 10+ minutes = late
-    if (delayMinutes > 120) { // 2+ hours late = absent
-      // Mark as absent instead of allowing check-in
+    if (delayMinutes > 120) {
       let attendance;
       if (existingAttendance) {
         attendance = existingAttendance;
@@ -1340,12 +1443,11 @@ router.post("/attendance/check-in", authenticateToken, async (req, res) => {
         }
       });
       
-    } else if (delayMinutes > 10) { // 10+ minutes late = late
+    } else if (delayMinutes > 10) {
       status = 'late';
       message = `Checked in late at ${checkInTime.toLocaleTimeString()} (${delayHours > 0 ? `${delayHours}h ` : ''}${delayMins}m late)`;
     }
 
-    // Allow normal check-in for late status
     let attendance;
     if (existingAttendance) {
       attendance = existingAttendance;
@@ -1469,11 +1571,14 @@ router.post("/attendance/check-out", authenticateToken, async (req, res) => {
   }
 });
 
-// 🔹 Enhanced Apply for Leave with Email Notifications (Future dates only)
+// 🔹 IMPROVED Apply for Leave with better error handling
 router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
   try {
+    console.log('📝 Processing leave application request...');
     const userId = req.user.id;
     const { reason, date, leaveType } = req.body;
+    
+    console.log('📝 Request data:', { userId, reason: reason?.substring(0, 50) + '...', date, leaveType });
     
     if (!reason || !date || !leaveType) {
       return res.status(400).json({
@@ -1482,9 +1587,10 @@ router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
       });
     }
     
-    // Validate that leave is for future date only
     const today = new Date().toISOString().split('T')[0];
     const leaveDate = new Date(date).toISOString().split('T')[0];
+    
+    console.log('📝 Date validation:', { today, leaveDate, isValid: leaveDate > today });
     
     if (leaveDate <= today) {
       return res.status(400).json({
@@ -1509,6 +1615,7 @@ router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
       });
     }
 
+    console.log('💾 Saving attendance record...');
     const attendance = new Attendance({
       userId,
       username: user.username,
@@ -1518,13 +1625,13 @@ router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
       notes: `Leave Application - Type: ${leaveType}, Reason: ${reason}`,
       leaveReason: reason,
       leaveType: leaveType,
-      isApproved: null, // Pending approval
+      isApproved: null,
       createdBy: userId
     });
 
     await attendance.save();
+    console.log('✅ Attendance record saved successfully');
 
-    // Get user profile for enhanced email details
     const userProfile = await UserProfile.findOne({ userId });
     const userDetails = {
       username: user.username,
@@ -1540,18 +1647,10 @@ router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
       reason: reason
     };
 
-    // Send email notification to admin (non-blocking)
-    try {
-      await sendLeaveApplicationEmail(userDetails, leaveDetails);
-      console.log(`📧 Leave application email sent to admin for ${user.username}`);
-    } catch (emailError) {
-      console.error("❌ Email notification failed (non-blocking):", emailError);
-      // Continue with success response even if email fails
-    }
-
+    // IMPROVED: Send response first, then send email in background
     res.status(200).json({
       success: true,
-      message: "Leave application submitted successfully. Admin has been notified and you'll receive an email once reviewed.",
+      message: "Leave application submitted successfully. Admin notification is being sent and you'll receive an email once reviewed.",
       attendance: {
         id: attendance._id,
         date: attendance.date,
@@ -1562,11 +1661,22 @@ router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
       }
     });
 
+    // Send email notification in background (non-blocking)
+    console.log('📧 Sending email notification to admin...');
+    setImmediate(async () => {
+      try {
+        await sendLeaveApplicationEmail(userDetails, leaveDetails);
+        console.log(`✅ Leave application email sent to admin for ${user.username}`);
+      } catch (emailError) {
+        console.error("❌ Background email notification failed:", emailError);
+      }
+    });
+
   } catch (error) {
-    console.error("Apply leave error:", error);
+    console.error("❌ Apply leave error:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to apply for leave"
+      message: "Failed to apply for leave: " + error.message
     });
   }
 });
@@ -1641,12 +1751,10 @@ router.get("/attendance/today", authenticateToken, async (req, res) => {
     const userId = req.user.id;
     const today = new Date().toISOString().split('T')[0];
     
-    // First, check if we should auto-mark this user as absent
     let attendance = await Attendance.findOne({ userId, date: today });
     const workingHours = await getUserWorkingHours(userId);
     const shouldMarkAbsent = await shouldAutoMarkAbsent(userId);
     
-    // If no attendance record exists and user should be marked absent, create it now
     if (!attendance && shouldMarkAbsent) {
       const user = await User.findById(userId);
       if (user) {
@@ -1778,7 +1886,6 @@ router.post("/attendance/change-status", authenticateToken, async (req, res) => 
     const { status, reason, date } = req.body;
     const today = new Date().toISOString().split('T')[0];
     
-    // Only allow status change for today
     if (date !== today) {
       return res.status(400).json({
         success: false,
@@ -1812,7 +1919,6 @@ router.post("/attendance/change-status", authenticateToken, async (req, res) => 
     let attendance = await Attendance.findOne({ userId, date: today });
     
     if (!attendance) {
-      // Create new attendance record
       attendance = new Attendance({
         userId,
         username: user.username,
@@ -1828,10 +1934,9 @@ router.post("/attendance/change-status", authenticateToken, async (req, res) => 
         attendance.absentReason = reason;
       } else if (status === 'leave') {
         attendance.leaveReason = reason;
-        attendance.isApproved = null; // Pending approval for leave
+        attendance.isApproved = null;
       }
     } else {
-      // Update existing attendance
       const oldStatus = attendance.status;
       attendance.status = status;
       attendance.notes = attendance.notes ? 
@@ -1840,17 +1945,14 @@ router.post("/attendance/change-status", authenticateToken, async (req, res) => 
       
       if (status === 'absent') {
         attendance.absentReason = reason;
-        // Clear leave fields if changing from leave to absent
         attendance.leaveReason = undefined;
         attendance.leaveType = undefined;
         attendance.isApproved = undefined;
       } else if (status === 'leave') {
         attendance.leaveReason = reason;
-        attendance.isApproved = null; // Pending approval for leave
-        // Clear absent fields if changing from absent to leave
+        attendance.isApproved = null;
         attendance.absentReason = undefined;
       } else {
-        // Clear both absent and leave fields for other statuses
         attendance.absentReason = undefined;
         attendance.leaveReason = undefined;
         attendance.leaveType = undefined;
@@ -1937,10 +2039,7 @@ router.post("/attendance/admin/approve-leave", async (req, res) => {
       });
     }
 
-    // Get admin user details for notification
     const adminUser = await User.findById(decoded.id);
-    
-    // Get the user who applied for leave
     const leaveUser = await User.findById(attendance.userId);
     
     attendance.isApproved = isApproved;
@@ -1948,32 +2047,31 @@ router.post("/attendance/admin/approve-leave", async (req, res) => {
     attendance.approvalDate = new Date();
     attendance.approvalNotes = approvalNotes || '';
     
-    // Add approval info to notes
     const approvalInfo = `\n--- ADMIN ACTION ---\n${isApproved ? 'APPROVED' : 'REJECTED'} by ${adminUser?.username || 'Admin'} on ${new Date().toLocaleString()}\nNotes: ${approvalNotes || 'None'}`;
     attendance.notes = (attendance.notes || '') + approvalInfo;
 
     if (!isApproved) {
-      // If rejected, remove the attendance record
       await Attendance.findByIdAndDelete(attendanceId);
       
-      // Send rejection email to user (non-blocking)
       if (leaveUser && leaveUser.email) {
-        try {
-          await sendLeaveStatusEmail(
-            leaveUser.email, 
-            leaveUser.username, 
-            {
-              date: attendance.date,
-              leaveType: attendance.leaveType,
-              reason: attendance.leaveReason
-            }, 
-            false, 
-            approvalNotes
-          );
-          console.log(`📧 Leave rejection email sent to ${leaveUser.username}`);
-        } catch (emailError) {
-          console.error("❌ Failed to send rejection email:", emailError);
-        }
+        setImmediate(async () => {
+          try {
+            await sendLeaveStatusEmail(
+              leaveUser.email, 
+              leaveUser.username, 
+              {
+                date: attendance.date,
+                leaveType: attendance.leaveType,
+                reason: attendance.leaveReason
+              }, 
+              false, 
+              approvalNotes
+            );
+            console.log(`📧 Leave rejection email sent to ${leaveUser.username}`);
+          } catch (emailError) {
+            console.error("❌ Failed to send rejection email:", emailError);
+          }
+        });
       }
       
       res.status(200).json({
@@ -1989,24 +2087,25 @@ router.post("/attendance/admin/approve-leave", async (req, res) => {
     } else {
       await attendance.save();
       
-      // Send approval email to user (non-blocking)
       if (leaveUser && leaveUser.email) {
-        try {
-          await sendLeaveStatusEmail(
-            leaveUser.email, 
-            leaveUser.username, 
-            {
-              date: attendance.date,
-              leaveType: attendance.leaveType,
-              reason: attendance.leaveReason
-            }, 
-            true, 
-            approvalNotes
-          );
-          console.log(`📧 Leave approval email sent to ${leaveUser.username}`);
-        } catch (emailError) {
-          console.error("❌ Failed to send approval email:", emailError);
-        }
+        setImmediate(async () => {
+          try {
+            await sendLeaveStatusEmail(
+              leaveUser.email, 
+              leaveUser.username, 
+              {
+                date: attendance.date,
+                leaveType: attendance.leaveType,
+                reason: attendance.leaveReason
+              }, 
+              true, 
+              approvalNotes
+            );
+            console.log(`📧 Leave approval email sent to ${leaveUser.username}`);
+          } catch (emailError) {
+            console.error("❌ Failed to send approval email:", emailError);
+          }
+        });
       }
       
       res.status(200).json({
@@ -2098,7 +2197,6 @@ router.get("/attendance/admin/pending-leaves", async (req, res) => {
       })
     );
 
-    // Sort by urgency (soonest leaves first)
     leavesWithUserDetails.sort((a, b) => a.daysUntilLeave - b.daysUntilLeave);
 
     res.status(200).json({
@@ -2147,7 +2245,6 @@ router.get("/attendance/admin/all", authenticateToken, async (req, res) => {
 
     const total = await Attendance.countDocuments(query);
 
-    // Enhance attendance records with user profile data
     const enhancedAttendance = await Promise.all(
       attendance.map(async (record) => {
         const profile = await UserProfile.findOne({ userId: record.userId }, 'name department workingHours');
@@ -2216,7 +2313,6 @@ router.get("/attendance/admin/today-summary", authenticateToken, async (req, res
       notMarked: totalUsers - todayAttendance.length
     };
 
-    // Calculate attendance rate
     const totalMarked = summary.present + summary.absent + summary.approvedLeave;
     summary.attendanceRate = totalUsers > 0 ? Math.round((totalMarked / totalUsers) * 100) : 0;
 
