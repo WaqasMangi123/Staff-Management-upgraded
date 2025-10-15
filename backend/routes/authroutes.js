@@ -6,18 +6,47 @@ const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
 const UserProfile = require("../models/userprofile");
 const Attendance = require("../models/attendance");
-console.log("UserProfile model loaded:", UserProfile.modelName); // Add this debug line
+console.log("UserProfile model loaded:", UserProfile.modelName);
 require("dotenv").config();
 
-// Environment Variable
+// Environment Variables
 const EMAIL_USER = process.env.EMAIL_USER;
 const EMAIL_PASS = process.env.EMAIL_PASS;
+const EMAIL_FROM = process.env.EMAIL_FROM || `"Staff Management" <${EMAIL_USER}>`;
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || EMAIL_USER;
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 
-// Nodemailer Setup
+// AUTHENTICATION MIDDLEWARE - MOVED TO TOP
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: "Access token required"
+    });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({
+        success: false,
+        message: "Invalid or expired token"
+      });
+    }
+    req.user = user;
+    next();
+  });
+};
+
+// Enhanced Nodemailer Setup
 const transporter = nodemailer.createTransport({
   service: "gmail",
+  host: process.env.EMAIL_HOST || "smtp.gmail.com",
+  port: process.env.EMAIL_PORT || 587,
+  secure: process.env.EMAIL_SECURE === 'true', // true for 465, false for other ports
   auth: { 
     user: EMAIL_USER, 
     pass: EMAIL_PASS 
@@ -33,7 +62,7 @@ const generateVerificationCode = () => Math.floor(100000 + Math.random() * 90000
 const sendVerificationEmail = async (email, verificationCode) => {
   try {
     await transporter.sendMail({
-      from: `"Parksy Portal" <${EMAIL_USER}>`,
+      from: EMAIL_FROM,
       to: email,
       subject: "Verify Your Email Address",
       html: `
@@ -50,7 +79,351 @@ const sendVerificationEmail = async (email, verificationCode) => {
   }
 };
 
-// Middleware to update lastActive timestamp
+// NEW: Send Leave Application Email to Admin
+const sendLeaveApplicationEmail = async (userDetails, leaveDetails) => {
+  try {
+    const leaveDate = new Date(leaveDetails.date).toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+
+    const daysUntil = Math.ceil((new Date(leaveDetails.date) - new Date()) / (1000 * 60 * 60 * 24));
+    const urgencyColor = daysUntil <= 2 ? '#dc3545' : daysUntil <= 7 ? '#ffc107' : '#28a745';
+    const urgencyText = daysUntil <= 2 ? 'URGENT' : daysUntil <= 7 ? 'SOON' : 'ADVANCE';
+
+    await transporter.sendMail({
+      from: EMAIL_FROM,
+      to: ADMIN_EMAIL,
+      subject: `🏖️ Leave Application - ${userDetails.name || userDetails.username} (${urgencyText})`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
+          <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            
+            <!-- Header -->
+            <div style="text-align: center; margin-bottom: 30px;">
+              <h1 style="color: #2563eb; margin: 0; font-size: 28px;">📋 New Leave Application</h1>
+              <div style="background-color: ${urgencyColor}; color: white; padding: 8px 15px; border-radius: 20px; display: inline-block; margin-top: 10px; font-weight: bold; font-size: 12px;">
+                ${urgencyText} - ${daysUntil} day(s) until leave
+              </div>
+            </div>
+
+            <!-- Employee Details -->
+            <div style="background-color: #e7f3ff; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #2563eb;">
+              <h3 style="color: #2563eb; margin: 0 0 15px 0; font-size: 18px;">👤 Employee Information</h3>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                <div>
+                  <strong style="color: #495057;">Name:</strong><br>
+                  <span style="font-size: 16px;">${userDetails.name || userDetails.username}</span>
+                </div>
+                <div>
+                  <strong style="color: #495057;">Email:</strong><br>
+                  <span style="font-size: 16px;">${userDetails.email}</span>
+                </div>
+                <div>
+                  <strong style="color: #495057;">Department:</strong><br>
+                  <span style="font-size: 16px;">${userDetails.department || 'Not Set'}</span>
+                </div>
+                <div>
+                  <strong style="color: #495057;">Position:</strong><br>
+                  <span style="font-size: 16px;">${userDetails.jobTitle || 'Not Set'}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Leave Details -->
+            <div style="background-color: #fff3cd; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #ffc107;">
+              <h3 style="color: #856404; margin: 0 0 15px 0; font-size: 18px;">📅 Leave Details</h3>
+              <div style="margin-bottom: 15px;">
+                <strong style="color: #495057;">Leave Date:</strong><br>
+                <span style="font-size: 18px; font-weight: bold; color: #856404;">${leaveDate}</span>
+              </div>
+              <div style="margin-bottom: 15px;">
+                <strong style="color: #495057;">Leave Type:</strong><br>
+                <span style="font-size: 16px; background-color: #ffc107; color: #212529; padding: 4px 8px; border-radius: 4px; font-weight: bold;">
+                  ${leaveDetails.leaveType.charAt(0).toUpperCase() + leaveDetails.leaveType.slice(1)} Leave
+                </span>
+              </div>
+              <div style="margin-bottom: 15px;">
+                <strong style="color: #495057;">Reason:</strong><br>
+                <div style="background-color: white; padding: 10px; border-radius: 4px; border: 1px solid #ffeaa7; margin-top: 5px;">
+                  <span style="font-size: 16px; line-height: 1.5;">${leaveDetails.reason}</span>
+                </div>
+              </div>
+              <div>
+                <strong style="color: #495057;">Application Submitted:</strong><br>
+                <span style="font-size: 14px; color: #6c757d;">${new Date().toLocaleString()}</span>
+              </div>
+            </div>
+
+            <!-- Action Required -->
+            <div style="background-color: #d4edda; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #28a745;">
+              <h3 style="color: #155724; margin: 0 0 15px 0; font-size: 18px;">⚡ Action Required</h3>
+              <p style="margin: 0 0 15px 0; color: #155724; font-size: 16px;">
+                Please review and approve/reject this leave application in the admin dashboard.
+              </p>
+              <div style="text-align: center; margin-top: 20px;">
+                <a href="${FRONTEND_URL}/admin/attendance" 
+                   style="background-color: #28a745; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px; display: inline-block;">
+                  📊 View in Admin Dashboard
+                </a>
+              </div>
+            </div>
+
+            <!-- Priority Indicator -->
+            ${daysUntil <= 7 ? `
+            <div style="background-color: #f8d7da; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #dc3545;">
+              <h4 style="color: #721c24; margin: 0 0 10px 0;">⚠️ Priority Notice</h4>
+              <p style="margin: 0; color: #721c24; font-size: 14px;">
+                This leave is scheduled for ${daysUntil <= 2 ? 'very soon' : 'next week'}. 
+                Please review and respond promptly to allow for proper planning.
+              </p>
+            </div>
+            ` : ''}
+
+            <!-- Footer -->
+            <div style="text-align: center; border-top: 1px solid #dee2e6; padding-top: 20px; margin-top: 30px;">
+              <p style="margin: 0; color: #6c757d; font-size: 14px;">
+                This is an automated notification from the Staff Management System.<br>
+                For any issues, please contact the system administrator.
+              </p>
+            </div>
+          </div>
+        </div>
+      `,
+    });
+
+    console.log(`✅ Leave application notification sent to admin for ${userDetails.username}`);
+    
+  } catch (err) {
+    console.error("❌ Failed to send leave application email:", err);
+    // Don't throw error to prevent leave application from failing due to email issues
+  }
+};
+
+// NEW: Send Leave Status Update Email to User
+const sendLeaveStatusEmail = async (userEmail, userName, leaveDetails, isApproved, adminNotes) => {
+  try {
+    const leaveDate = new Date(leaveDetails.date).toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+
+    const statusColor = isApproved ? '#28a745' : '#dc3545';
+    const statusText = isApproved ? 'APPROVED' : 'REJECTED';
+    const statusIcon = isApproved ? '✅' : '❌';
+
+    await transporter.sendMail({
+      from: EMAIL_FROM,
+      to: userEmail,
+      subject: `${statusIcon} Leave Request ${statusText} - ${leaveDate}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
+          <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            
+            <!-- Header -->
+            <div style="text-align: center; margin-bottom: 30px;">
+              <h1 style="color: ${statusColor}; margin: 0; font-size: 28px;">${statusIcon} Leave Request ${statusText}</h1>
+            </div>
+
+            <!-- Status Box -->
+            <div style="background-color: ${statusColor}; color: white; padding: 20px; border-radius: 8px; text-align: center; margin-bottom: 25px;">
+              <h2 style="margin: 0; font-size: 24px;">Your leave request has been ${statusText.toLowerCase()}</h2>
+            </div>
+
+            <!-- Leave Details -->
+            <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
+              <h3 style="color: #495057; margin: 0 0 15px 0;">📋 Leave Details</h3>
+              <div style="margin-bottom: 10px;">
+                <strong>Date:</strong> ${leaveDate}
+              </div>
+              <div style="margin-bottom: 10px;">
+                <strong>Type:</strong> ${leaveDetails.leaveType.charAt(0).toUpperCase() + leaveDetails.leaveType.slice(1)} Leave
+              </div>
+              <div style="margin-bottom: 10px;">
+                <strong>Your Reason:</strong> ${leaveDetails.reason}
+              </div>
+              <div>
+                <strong>Decision Date:</strong> ${new Date().toLocaleDateString()}
+              </div>
+            </div>
+
+            ${adminNotes ? `
+            <!-- Admin Notes -->
+            <div style="background-color: #e9ecef; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
+              <h3 style="color: #495057; margin: 0 0 15px 0;">💬 Admin Notes</h3>
+              <p style="margin: 0; font-style: italic; color: #6c757d;">"${adminNotes}"</p>
+            </div>
+            ` : ''}
+
+            ${isApproved ? `
+            <!-- Approval Message -->
+            <div style="background-color: #d4edda; padding: 20px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #28a745;">
+              <h3 style="color: #155724; margin: 0 0 15px 0;">🎉 What's Next?</h3>
+              <ul style="color: #155724; margin: 0; padding-left: 20px;">
+                <li>Your leave has been approved and is now in the system</li>
+                <li>Please ensure any pending work is completed before your leave date</li>
+                <li>Coordinate with your team for any handovers needed</li>
+                <li>Enjoy your time off!</li>
+              </ul>
+            </div>
+            ` : `
+            <!-- Rejection Message -->
+            <div style="background-color: #f8d7da; padding: 20px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #dc3545;">
+              <h3 style="color: #721c24; margin: 0 0 15px 0;">📝 Next Steps</h3>
+              <ul style="color: #721c24; margin: 0; padding-left: 20px;">
+                <li>Your leave request has been declined</li>
+                <li>Please speak with your supervisor if you need clarification</li>
+                <li>You can submit a new request with different dates if needed</li>
+                <li>Contact HR for any questions about leave policies</li>
+              </ul>
+            </div>
+            `}
+
+            <!-- Footer -->
+            <div style="text-align: center; border-top: 1px solid #dee2e6; padding-top: 20px;">
+              <p style="margin: 0; color: #6c757d; font-size: 14px;">
+                This notification was sent from the Staff Management System.<br>
+                For questions, please contact your supervisor or HR department.
+              </p>
+            </div>
+          </div>
+        </div>
+      `,
+    });
+
+    console.log(`✅ Leave status email sent to ${userEmail} - Status: ${statusText}`);
+    
+  } catch (err) {
+    console.error("❌ Failed to send leave status email:", err);
+  }
+};
+
+// Helper function to get user's working hours from profile
+const getUserWorkingHours = async (userId) => {
+  try {
+    const profile = await UserProfile.findOne({ userId });
+    if (profile && profile.workingHours && profile.workingHours.start) {
+      return {
+        start: profile.workingHours.start,
+        end: profile.workingHours.end
+      };
+    }
+    // Default working hours if no profile found
+    return {
+      start: '09:00',
+      end: '17:00'
+    };
+  } catch (error) {
+    console.error('Error getting user working hours:', error);
+    return {
+      start: '09:00',
+      end: '17:00'
+    };
+  }
+};
+
+// Helper function to check if user should be auto-marked absent
+const shouldAutoMarkAbsent = async (userId) => {
+  try {
+    const workingHours = await getUserWorkingHours(userId);
+    const now = new Date();
+    const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    
+    // Parse working start time
+    const [startHour, startMinute] = workingHours.start.split(':').map(Number);
+    const workStartMinutes = startHour * 60 + startMinute;
+    
+    // Add 10 minute grace period
+    const graceEndMinutes = workStartMinutes + 10;
+    
+    // Parse current time
+    const [currentHour, currentMinute] = currentTime.split(':').map(Number);
+    const currentMinutes = currentHour * 60 + currentMinute;
+    
+    return currentMinutes > graceEndMinutes;
+  } catch (error) {
+    console.error('Error checking auto absent condition:', error);
+    return false;
+  }
+};
+
+// Helper function to determine if check-in should be marked as absent instead of late
+const shouldMarkAsAbsent = async (userId) => {
+  try {
+    const workingHours = await getUserWorkingHours(userId);
+    const now = new Date();
+    const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    
+    // Parse working start time
+    const [startHour, startMinute] = workingHours.start.split(':').map(Number);
+    const workStartMinutes = startHour * 60 + startMinute;
+    
+    // Add significant delay threshold (e.g., 2+ hours after start time = absent)
+    const absentThresholdMinutes = workStartMinutes + 120; // 2 hours after start time
+    
+    // Parse current time
+    const [currentHour, currentMinute] = currentTime.split(':').map(Number);
+    const currentMinutes = currentHour * 60 + currentMinute;
+    
+    return currentMinutes > absentThresholdMinutes;
+  } catch (error) {
+    console.error('Error checking absent condition:', error);
+    return false;
+  }
+};
+
+// Auto-mark absent users who haven't checked in after grace period
+const autoMarkAbsentUsers = async () => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    
+    // Get all verified users who haven't marked attendance today
+    const allUsers = await User.find({ 
+      role: 'user', 
+      verified: true 
+    }).select('_id username email');
+    
+    for (const user of allUsers) {
+      // Check if user already has attendance marked for today
+      const existingAttendance = await Attendance.findOne({ 
+        userId: user._id, 
+        date: today 
+      });
+      
+      if (!existingAttendance) {
+        // Check if user should be auto-marked absent
+        const shouldMarkAbsent = await shouldAutoMarkAbsent(user._id);
+        
+        if (shouldMarkAbsent) {
+          const workingHours = await getUserWorkingHours(user._id);
+          
+          const attendance = new Attendance({
+            userId: user._id,
+            username: user.username,
+            email: user.email,
+            date: today,
+            status: 'absent',
+            notes: `Auto-marked absent - No check-in after ${workingHours.start} + 10 min grace period`,
+            absentReason: 'Auto-marked for late arrival',
+            isManualEntry: false,
+            createdBy: null // System created
+          });
+          
+          await attendance.save();
+          console.log(`Auto-marked ${user.username} as absent for ${today}`);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error in auto-mark absent process:', error);
+  }
+};
+
+// Middleware to update lastActive timestamp and run auto-absent check
 router.use(async (req, res, next) => {
   if (req.user) {
     try {
@@ -59,6 +432,12 @@ router.use(async (req, res, next) => {
       console.error("Error updating lastActive:", err);
     }
   }
+  
+  // Run auto-absent check more frequently for testing
+  if (Math.random() < 0.3) { // Run 30% of the time instead of 10%
+    autoMarkAbsentUsers().catch(err => console.error('Auto-absent check failed:', err));
+  }
+  
   next();
 });
 
@@ -140,10 +519,10 @@ router.post("/register", validateRegisterInput, async (req, res) => {
     const newUser = new User({
       username: username.trim(),
       email: trimmedEmail,
-      password: trimmedPassword, // Schema will hash it
+      password: trimmedPassword,
       verified: false,
       verificationCode,
-      verificationCodeExpires: Date.now() + 10 * 60 * 1000, // 10 minutes
+      verificationCodeExpires: Date.now() + 10 * 60 * 1000,
       role: 'user'
     });
 
@@ -199,13 +578,11 @@ router.post("/verify", async (req, res) => {
       });
     }
 
-    // Mark as verified
     user.verified = true;
     user.verificationCode = undefined;
     user.verificationCodeExpires = undefined;
     await user.save();
 
-    // Generate JWT token
     const token = jwt.sign(
       { 
         id: user._id,
@@ -244,7 +621,6 @@ router.post("/login", validateLoginInput, async (req, res) => {
     const trimmedEmail = email.trim().toLowerCase();
     const trimmedPassword = password.trim();
 
-    // Find user and include password field
     const user = await User.findOne({ email: trimmedEmail }).select('+password +verificationCode +verificationCodeExpires');
     
     if (!user) {
@@ -269,7 +645,6 @@ router.post("/login", validateLoginInput, async (req, res) => {
       });
     }
 
-    // Use the User model's comparePassword method
     const isPasswordValid = await user.comparePassword(trimmedPassword);
     
     if (!isPasswordValid) {
@@ -279,11 +654,9 @@ router.post("/login", validateLoginInput, async (req, res) => {
       });
     }
 
-    // Update last login time
     user.lastLogin = new Date();
     await user.save();
 
-    // Generate JWT token
     const token = jwt.sign(
       { 
         id: user._id,
@@ -294,7 +667,6 @@ router.post("/login", validateLoginInput, async (req, res) => {
       { expiresIn: "24h" }
     );
 
-    // Return user data without password
     const userResponse = {
       id: user._id,
       username: user.username,
@@ -346,10 +718,9 @@ router.post("/resend-verification", async (req, res) => {
       });
     }
 
-    // Generate new verification code
     const verificationCode = generateVerificationCode();
     user.verificationCode = verificationCode;
-    user.verificationCodeExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+    user.verificationCodeExpires = Date.now() + 10 * 60 * 1000;
     await user.save();
 
     await sendVerificationEmail(user.email, verificationCode);
@@ -389,16 +760,14 @@ router.post("/forgot-password", async (req, res) => {
       });
     }
 
-    // Generate reset token
     const resetToken = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: "1h" });
     user.resetPasswordToken = resetToken;
-    user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
+    user.resetPasswordExpires = Date.now() + 3600000;
     await user.save();
 
-    // Send email with reset link
     const resetUrl = `https://parksy.uk/#/reset-password/${resetToken}`;
     await transporter.sendMail({
-      from: `"Parksy Portal" <${EMAIL_USER}>`,
+      from: EMAIL_FROM,
       to: user.email,
       subject: "Password Reset Request",
       html: `
@@ -519,7 +888,6 @@ router.post("/reset-password", async (req, res) => {
       });
     }
 
-    // Check if new password is same as old
     const isSamePassword = await user.comparePassword(newPassword.trim());
     if (isSamePassword) {
       return res.status(400).json({ 
@@ -528,15 +896,13 @@ router.post("/reset-password", async (req, res) => {
       });
     }
 
-    // Let schema handle password hashing
     user.password = newPassword.trim();
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
     await user.save();
 
-    // Send confirmation email
     await transporter.sendMail({
-      from: `"Parksy Portal" <${EMAIL_USER}>`,
+      from: EMAIL_FROM,
       to: user.email,
       subject: "Password Changed Successfully",
       html: `
@@ -649,6 +1015,7 @@ router.delete("/users/:id", async (req, res) => {
     });
   }
 });
+
 // 🔹 Get User Profile
 router.get("/profile/:userId", async (req, res) => {
   try {
@@ -656,16 +1023,9 @@ router.get("/profile/:userId", async (req, res) => {
     
     const profile = await UserProfile.findOne({ userId });
     
-    if (!profile) {
-      return res.status(404).json({
-        success: false,
-        message: "Profile not found"
-      });
-    }
-
     res.status(200).json({
       success: true,
-      profile
+      profile: profile || null
     });
 
   } catch (error) {
@@ -697,7 +1057,6 @@ router.post("/update-profile", async (req, res) => {
       notes
     } = req.body;
 
-    // Input validation
     if (!userId || !name || !phone || !department || !jobTitle || !shift) {
       return res.status(400).json({
         success: false,
@@ -705,7 +1064,6 @@ router.post("/update-profile", async (req, res) => {
       });
     }
 
-    // Validate working hours
     if (!workingHours || !workingHours.start || !workingHours.end) {
       return res.status(400).json({
         success: false,
@@ -713,7 +1071,6 @@ router.post("/update-profile", async (req, res) => {
       });
     }
 
-    // Validate emergency contact
     if (!emergencyContact || !emergencyContact.name || !emergencyContact.relationship || !emergencyContact.phone) {
       return res.status(400).json({
         success: false,
@@ -721,11 +1078,9 @@ router.post("/update-profile", async (req, res) => {
       });
     }
 
-    // Check if profile exists
     let profile = await UserProfile.findOne({ userId });
 
     if (profile) {
-      // Update existing profile
       profile.name = name.trim();
       profile.phone = phone.trim();
       profile.profilePicture = profilePicture || null;
@@ -748,7 +1103,6 @@ router.post("/update-profile", async (req, res) => {
 
       await profile.save();
     } else {
-      // Create new profile
       profile = new UserProfile({
         userId,
         name: name.trim(),
@@ -805,42 +1159,87 @@ router.post("/update-profile", async (req, res) => {
   }
 });
 
-
-// Add these routes at the bottom of your file, before module.exports = router;
-
 // 🔹 ATTENDANCE ROUTES
 
-// Middleware to extract user from JWT token
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    return res.status(401).json({
-      success: false,
-      message: "Access token required"
+// Add test endpoint for debugging
+router.get("/attendance/debug-auto-absent", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const workingHours = await getUserWorkingHours(userId);
+    const shouldMark = await shouldAutoMarkAbsent(userId);
+    const shouldBeAbsent = await shouldMarkAsAbsent(userId);
+    
+    const now = new Date();
+    const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    
+    // Parse working start time
+    const [startHour, startMinute] = workingHours.start.split(':').map(Number);
+    const workStartMinutes = startHour * 60 + startMinute;
+    const graceEndMinutes = workStartMinutes + 10;
+    const absentThresholdMinutes = workStartMinutes + 120;
+    
+    // Parse current time
+    const [currentHour, currentMinute] = currentTime.split(':').map(Number);
+    const currentMinutes = currentHour * 60 + currentMinute;
+    
+    const debugInfo = {
+      userId: userId,
+      workingHours: workingHours,
+      currentTime: currentTime,
+      serverTime: now.toLocaleString(),
+      shouldAutoMarkAbsent: shouldMark,
+      shouldMarkAsAbsent: shouldBeAbsent,
+      calculations: {
+        workStartMinutes,
+        graceEndMinutes,
+        absentThresholdMinutes,
+        currentMinutes,
+        minutesAfterStart: currentMinutes - workStartMinutes,
+        isAfterGrace: currentMinutes > graceEndMinutes,
+        isAfterAbsentThreshold: currentMinutes > absentThresholdMinutes
+      }
+    };
+    
+    res.json({
+      success: true,
+      debug: debugInfo
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
+});
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({
-        success: false,
-        message: "Invalid or expired token"
-      });
-    }
-    req.user = user;
-    next();
-  });
-};
+// Force run auto-absent check (admin only)
+router.post("/attendance/force-auto-absent", authenticateToken, async (req, res) => {
+  try {
+    await autoMarkAbsentUsers();
+    
+    res.status(200).json({
+      success: true,
+      message: "Auto-absent check completed successfully",
+      timestamp: new Date().toLocaleString()
+    });
 
-// Mark Check-in
+  } catch (error) {
+    console.error("Force auto-absent error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to run auto-absent check",
+      error: error.message
+    });
+  }
+});
+
+// 🔹 Smart Check-in with enhanced absent/late logic
 router.post("/attendance/check-in", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const today = new Date().toISOString().split('T')[0];
     
-    // Get user details
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({
@@ -849,15 +1248,28 @@ router.post("/attendance/check-in", authenticateToken, async (req, res) => {
       });
     }
 
-    // Check if already checked in today or marked absent/leave
+    // Check if already has attendance for today
     const existingAttendance = await Attendance.findOne({ userId, date: today });
     if (existingAttendance) {
-      if (existingAttendance.status === 'absent' || existingAttendance.status === 'leave') {
+      if (existingAttendance.status === 'absent' && !existingAttendance.checkIn) {
+        // If already marked absent, prevent check-in for very late arrivals
+        const shouldBeAbsent = await shouldMarkAsAbsent(userId);
+        
+        if (shouldBeAbsent) {
+          return res.status(400).json({
+            success: false,
+            message: "Cannot check in - marked as absent due to excessive delay. Please contact admin for manual attendance correction."
+          });
+        }
+      }
+      
+      if (existingAttendance.status === 'leave') {
         return res.status(400).json({
           success: false,
-          message: `Cannot check in - already marked as ${existingAttendance.status} for today`
+          message: "Cannot check in - you have approved leave for today"
         });
       }
+      
       if (existingAttendance.checkIn && existingAttendance.checkIn.time) {
         return res.status(400).json({
           success: false,
@@ -869,8 +1281,71 @@ router.post("/attendance/check-in", authenticateToken, async (req, res) => {
 
     const checkInTime = new Date();
     const { location, notes } = req.body;
+    
+    // Get user's working hours from profile
+    const workingHours = await getUserWorkingHours(userId);
+    
+    // Calculate timing
+    const [workStartHour, workStartMinute] = workingHours.start.split(':').map(Number);
+    const workStartMinutes = workStartHour * 60 + workStartMinute;
+    const checkInHour = checkInTime.getHours();
+    const checkInMinutes = checkInTime.getMinutes();
+    const checkInTotalMinutes = checkInHour * 60 + checkInMinutes;
+    
+    // Calculate delay in minutes
+    const delayMinutes = checkInTotalMinutes - workStartMinutes;
+    const delayHours = Math.floor(delayMinutes / 60);
+    const delayMins = delayMinutes % 60;
+    
+    let status = 'present';
+    let message = `Checked in successfully at ${checkInTime.toLocaleTimeString()}`;
+    
+    // Enhanced logic: 2+ hours late = absent, 10+ minutes = late
+    if (delayMinutes > 120) { // 2+ hours late = absent
+      // Mark as absent instead of allowing check-in
+      let attendance;
+      if (existingAttendance) {
+        attendance = existingAttendance;
+        attendance.status = 'absent';
+        attendance.absentReason = `Excessive delay - ${delayHours}h ${delayMins}m late`;
+        attendance.notes = `Attempted check-in at ${checkInTime.toLocaleTimeString()} - marked absent due to excessive delay`;
+        attendance.isManualEntry = true;
+      } else {
+        attendance = new Attendance({
+          userId,
+          username: user.username,
+          email: user.email,
+          date: today,
+          status: 'absent',
+          absentReason: `Excessive delay - ${delayHours}h ${delayMins}m late`,
+          notes: `Attempted check-in at ${checkInTime.toLocaleTimeString()} - marked absent due to excessive delay`,
+          isManualEntry: true
+        });
+      }
+      
+      await attendance.save();
+      
+      return res.status(400).json({
+        success: false,
+        message: `Cannot check in - marked as absent due to excessive delay (${delayHours}h ${delayMins}m late). Please contact admin for manual correction.`,
+        attendance: {
+          id: attendance._id,
+          status: 'absent',
+          reason: attendance.absentReason,
+          delayInfo: {
+            delayMinutes,
+            delayHours,
+            delayMins
+          }
+        }
+      });
+      
+    } else if (delayMinutes > 10) { // 10+ minutes late = late
+      status = 'late';
+      message = `Checked in late at ${checkInTime.toLocaleTimeString()} (${delayHours > 0 ? `${delayHours}h ` : ''}${delayMins}m late)`;
+    }
 
-    // Create or update attendance record
+    // Allow normal check-in for late status
     let attendance;
     if (existingAttendance) {
       attendance = existingAttendance;
@@ -880,6 +1355,10 @@ router.post("/attendance/check-in", authenticateToken, async (req, res) => {
         ipAddress: req.ip,
         deviceInfo: req.headers['user-agent']
       };
+      attendance.status = status;
+      if (status === 'late') {
+        attendance.notes = `Late arrival - ${delayHours > 0 ? `${delayHours}h ` : ''}${delayMins}m after start time`;
+      }
     } else {
       attendance = new Attendance({
         userId,
@@ -892,32 +1371,27 @@ router.post("/attendance/check-in", authenticateToken, async (req, res) => {
           ipAddress: req.ip,
           deviceInfo: req.headers['user-agent']
         },
-        notes: notes || ''
+        status: status,
+        notes: status === 'late' ? `Late arrival - ${delayHours > 0 ? `${delayHours}h ` : ''}${delayMins}m after start time` : (notes || '')
       });
-    }
-
-    // Check if late (assuming work starts at 9:00 AM)
-    const checkInHour = checkInTime.getHours();
-    const checkInMinutes = checkInTime.getMinutes();
-    const workStartMinutes = 9 * 60; // 9:00 AM
-    const checkInTotalMinutes = checkInHour * 60 + checkInMinutes;
-    
-    if (checkInTotalMinutes > workStartMinutes) {
-      attendance.status = 'late';
-    } else {
-      attendance.status = 'present';
     }
 
     await attendance.save();
 
     res.status(200).json({
       success: true,
-      message: `Checked in successfully at ${checkInTime.toLocaleTimeString()}`,
+      message: message,
       attendance: {
         id: attendance._id,
         checkInTime: attendance.checkIn.time,
         status: attendance.status,
-        isLate: attendance.status === 'late'
+        isLate: attendance.status === 'late',
+        delayInfo: {
+          delayMinutes,
+          delayHours,
+          delayMins
+        },
+        workingHours: workingHours
       }
     });
 
@@ -930,13 +1404,12 @@ router.post("/attendance/check-in", authenticateToken, async (req, res) => {
   }
 });
 
-// Mark Check-out
+// 🔹 Enhanced Check-out
 router.post("/attendance/check-out", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const today = new Date().toISOString().split('T')[0];
     
-    // Find today's attendance
     const attendance = await Attendance.findOne({ userId, date: today });
     if (!attendance || !attendance.checkIn || !attendance.checkIn.time) {
       return res.status(400).json({
@@ -967,7 +1440,6 @@ router.post("/attendance/check-out", authenticateToken, async (req, res) => {
       attendance.notes = attendance.notes ? `${attendance.notes}\n${notes}` : notes;
     }
 
-    // Calculate working hours
     const diffInMs = checkOutTime - attendance.checkIn.time;
     const diffInMinutes = Math.floor(diffInMs / (1000 * 60));
     attendance.workingHours = diffInMinutes;
@@ -997,67 +1469,29 @@ router.post("/attendance/check-out", authenticateToken, async (req, res) => {
   }
 });
 
-// Mark as Absent
-router.post("/attendance/mark-absent", authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { reason, date } = req.body;
-    const attendanceDate = date || new Date().toISOString().split('T')[0];
-    
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found"
-      });
-    }
-
-    const existingAttendance = await Attendance.findOne({ userId, date: attendanceDate });
-    if (existingAttendance) {
-      return res.status(400).json({
-        success: false,
-        message: "Attendance already marked for this date"
-      });
-    }
-
-    const attendance = new Attendance({
-      userId,
-      username: user.username,
-      email: user.email,
-      date: attendanceDate,
-      status: 'absent',
-      notes: `Absent - Reason: ${reason}`,
-      absentReason: reason
-    });
-
-    await attendance.save();
-
-    res.status(200).json({
-      success: true,
-      message: "Successfully marked as absent",
-      attendance: {
-        id: attendance._id,
-        date: attendance.date,
-        status: attendance.status,
-        reason: reason
-      }
-    });
-
-  } catch (error) {
-    console.error("Mark absent error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to mark absent"
-    });
-  }
-});
-
-// Apply for Leave (Updated with Approval System)
+// 🔹 Enhanced Apply for Leave with Email Notifications (Future dates only)
 router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const { reason, date, leaveType } = req.body;
-    const leaveDate = date || new Date().toISOString().split('T')[0];
+    
+    if (!reason || !date || !leaveType) {
+      return res.status(400).json({
+        success: false,
+        message: "Reason, date, and leave type are required"
+      });
+    }
+    
+    // Validate that leave is for future date only
+    const today = new Date().toISOString().split('T')[0];
+    const leaveDate = new Date(date).toISOString().split('T')[0];
+    
+    if (leaveDate <= today) {
+      return res.status(400).json({
+        success: false,
+        message: "Leave can only be applied for future dates. For today or past dates, contact your admin directly."
+      });
+    }
     
     const user = await User.findById(userId);
     if (!user) {
@@ -1081,22 +1515,48 @@ router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
       email: user.email,
       date: leaveDate,
       status: 'leave',
-      notes: `Leave Application - Reason: ${reason}`,
+      notes: `Leave Application - Type: ${leaveType}, Reason: ${reason}`,
       leaveReason: reason,
-      leaveType: leaveType || 'other',
-      isApproved: null, // null = pending
+      leaveType: leaveType,
+      isApproved: null, // Pending approval
       createdBy: userId
     });
 
     await attendance.save();
 
+    // Get user profile for enhanced email details
+    const userProfile = await UserProfile.findOne({ userId });
+    const userDetails = {
+      username: user.username,
+      email: user.email,
+      name: userProfile?.name || user.username,
+      department: userProfile?.department || 'Not Set',
+      jobTitle: userProfile?.jobTitle || 'Not Set'
+    };
+
+    const leaveDetails = {
+      date: leaveDate,
+      leaveType: leaveType,
+      reason: reason
+    };
+
+    // Send email notification to admin (non-blocking)
+    try {
+      await sendLeaveApplicationEmail(userDetails, leaveDetails);
+      console.log(`📧 Leave application email sent to admin for ${user.username}`);
+    } catch (emailError) {
+      console.error("❌ Email notification failed (non-blocking):", emailError);
+      // Continue with success response even if email fails
+    }
+
     res.status(200).json({
       success: true,
-      message: "Leave application submitted successfully. Waiting for admin approval.",
+      message: "Leave application submitted successfully. Admin has been notified and you'll receive an email once reviewed.",
       attendance: {
         id: attendance._id,
         date: attendance.date,
         status: attendance.status,
+        leaveType: leaveType,
         reason: reason,
         approvalStatus: 'pending'
       }
@@ -1111,23 +1571,20 @@ router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
   }
 });
 
-// Change Status Route
-router.post("/attendance/change-status", authenticateToken, async (req, res) => {
+// 🔹 Manual Absent (for emergencies - same day only)
+router.post("/attendance/mark-absent", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    const { status, reason, date } = req.body;
-    const attendanceDate = date || new Date().toISOString().split('T')[0];
+    const { reason } = req.body;
+    const today = new Date().toISOString().split('T')[0];
     
-    // Validate status
-    const validStatuses = ['present', 'absent', 'late', 'half-day', 'leave'];
-    if (!validStatuses.includes(status)) {
+    if (!reason) {
       return res.status(400).json({
         success: false,
-        message: "Invalid status. Must be one of: present, absent, late, half-day, leave"
+        message: "Reason is required for marking absent"
       });
     }
-
-    // Get user details
+    
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({
@@ -1136,76 +1593,93 @@ router.post("/attendance/change-status", authenticateToken, async (req, res) => 
       });
     }
 
-    // Find existing attendance record
-    let attendance = await Attendance.findOne({ userId, date: attendanceDate });
-    
-    if (!attendance) {
-      return res.status(404).json({
+    const existingAttendance = await Attendance.findOne({ userId, date: today });
+    if (existingAttendance) {
+      return res.status(400).json({
         success: false,
-        message: "No attendance record found for this date"
+        message: "Attendance already marked for today"
       });
     }
 
-    // Store old status for logging
-    const oldStatus = attendance.status;
-
-    // Update status and add reason to notes
-    attendance.status = status;
-    attendance.notes = attendance.notes ? 
-      `${attendance.notes}\nStatus changed from '${oldStatus}' to '${status}' - Reason: ${reason}` : 
-      `Status changed from '${oldStatus}' to '${status}' - Reason: ${reason}`;
-
-    // Handle specific status changes
-    if (status === 'absent' || status === 'leave') {
-      // If changing to absent/leave, clear check-in/out data
-      attendance.checkIn = undefined;
-      attendance.checkOut = undefined;
-      attendance.workingHours = 0;
-      
-      if (status === 'absent') {
-        attendance.absentReason = reason;
-      } else {
-        attendance.leaveReason = reason;
-        attendance.isApproved = null; // Reset to pending if changing to leave
-      }
-    }
+    const attendance = new Attendance({
+      userId,
+      username: user.username,
+      email: user.email,
+      date: today,
+      status: 'absent',
+      notes: `Manual absent - Reason: ${reason}`,
+      absentReason: reason,
+      isManualEntry: true,
+      createdBy: userId
+    });
 
     await attendance.save();
 
     res.status(200).json({
       success: true,
-      message: `Status successfully changed from '${oldStatus}' to '${status}'`,
+      message: "Successfully marked as absent for today",
       attendance: {
         id: attendance._id,
         date: attendance.date,
-        oldStatus: oldStatus,
-        newStatus: attendance.status,
+        status: attendance.status,
         reason: reason
       }
     });
 
   } catch (error) {
-    console.error("Change status error:", error);
+    console.error("Mark absent error:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to change status"
+      message: "Failed to mark absent"
     });
   }
 });
 
-// Get Today's Attendance Status (Updated)
+// 🔹 Get Today's Attendance Status with Real-time Auto-Absent Check
 router.get("/attendance/today", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const today = new Date().toISOString().split('T')[0];
     
-    const attendance = await Attendance.findOne({ userId, date: today });
+    // First, check if we should auto-mark this user as absent
+    let attendance = await Attendance.findOne({ userId, date: today });
+    const workingHours = await getUserWorkingHours(userId);
+    const shouldMarkAbsent = await shouldAutoMarkAbsent(userId);
+    
+    // If no attendance record exists and user should be marked absent, create it now
+    if (!attendance && shouldMarkAbsent) {
+      const user = await User.findById(userId);
+      if (user) {
+        attendance = new Attendance({
+          userId,
+          username: user.username,
+          email: user.email,
+          date: today,
+          status: 'absent',
+          notes: `Auto-marked absent - No check-in after ${workingHours.start} + 10 min grace period`,
+          absentReason: 'Auto-marked for late arrival',
+          isManualEntry: false,
+          createdBy: null
+        });
+        
+        await attendance.save();
+        console.log(`Real-time auto-marked ${user.username} as absent for ${today}`);
+      }
+    }
     
     if (!attendance) {
       return res.status(200).json({
         success: true,
         attendance: null,
-        status: 'not-checked-in'
+        status: 'not-checked-in',
+        workingHours: workingHours,
+        shouldAutoMarkAbsent: shouldMarkAbsent,
+        graceTimeInfo: {
+          workStart: workingHours.start,
+          gracePeriod: '10 minutes',
+          graceEnd: `${workingHours.start.split(':')[0]}:${(parseInt(workingHours.start.split(':')[1]) + 10).toString().padStart(2, '0')}`,
+          currentTime: new Date().toLocaleTimeString()
+        }
       });
     }
 
@@ -1223,7 +1697,7 @@ router.get("/attendance/today", authenticateToken, async (req, res) => {
       }
     }
 
-    const response = {
+    res.status(200).json({
       success: true,
       attendance: {
         id: attendance._id,
@@ -1239,12 +1713,13 @@ router.get("/attendance/today", authenticateToken, async (req, res) => {
         isApproved: attendance.isApproved,
         approvedBy: attendance.approvedBy,
         approvalDate: attendance.approvalDate,
-        approvalNotes: attendance.approvalNotes
+        approvalNotes: attendance.approvalNotes,
+        isAutoMarked: !attendance.isManualEntry && attendance.status === 'absent'
       },
-      status: status
-    };
-
-    res.status(200).json(response);
+      status: status,
+      workingHours: workingHours,
+      shouldAutoMarkAbsent: shouldMarkAbsent
+    });
 
   } catch (error) {
     console.error("Get today attendance error:", error);
@@ -1255,7 +1730,7 @@ router.get("/attendance/today", authenticateToken, async (req, res) => {
   }
 });
 
-// Get User's Attendance History
+// 🔹 Get User's Attendance History
 router.get("/attendance/history", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1263,7 +1738,6 @@ router.get("/attendance/history", authenticateToken, async (req, res) => {
     
     let query = { userId };
     
-    // Filter by month/year if provided
     if (month && year) {
       const startDate = `${year}-${month.padStart(2, '0')}-01`;
       const endDate = new Date(year, month, 0).toISOString().split('T')[0];
@@ -1297,10 +1771,121 @@ router.get("/attendance/history", authenticateToken, async (req, res) => {
   }
 });
 
-// Admin: Approve/Reject Leave
+// 🔹 Enhanced Change Status (today only)
+router.post("/attendance/change-status", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { status, reason, date } = req.body;
+    const today = new Date().toISOString().split('T')[0];
+    
+    // Only allow status change for today
+    if (date !== today) {
+      return res.status(400).json({
+        success: false,
+        message: "Status can only be changed for today"
+      });
+    }
+    
+    if (!status || !reason) {
+      return res.status(400).json({
+        success: false,
+        message: "Status and reason are required"
+      });
+    }
+    
+    const validStatuses = ['present', 'absent', 'late', 'half-day', 'leave'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid status. Valid options: present, absent, late, half-day, leave"
+      });
+    }
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
+      });
+    }
+
+    let attendance = await Attendance.findOne({ userId, date: today });
+    
+    if (!attendance) {
+      // Create new attendance record
+      attendance = new Attendance({
+        userId,
+        username: user.username,
+        email: user.email,
+        date: today,
+        status: status,
+        notes: `Status change: ${status} - Reason: ${reason}`,
+        isManualEntry: true,
+        createdBy: userId
+      });
+      
+      if (status === 'absent') {
+        attendance.absentReason = reason;
+      } else if (status === 'leave') {
+        attendance.leaveReason = reason;
+        attendance.isApproved = null; // Pending approval for leave
+      }
+    } else {
+      // Update existing attendance
+      const oldStatus = attendance.status;
+      attendance.status = status;
+      attendance.notes = attendance.notes ? 
+        `${attendance.notes}\n--- Status Changed from ${oldStatus} to ${status} ---\nReason: ${reason}` : 
+        `Status change: ${status} - Reason: ${reason}`;
+      
+      if (status === 'absent') {
+        attendance.absentReason = reason;
+        // Clear leave fields if changing from leave to absent
+        attendance.leaveReason = undefined;
+        attendance.leaveType = undefined;
+        attendance.isApproved = undefined;
+      } else if (status === 'leave') {
+        attendance.leaveReason = reason;
+        attendance.isApproved = null; // Pending approval for leave
+        // Clear absent fields if changing from absent to leave
+        attendance.absentReason = undefined;
+      } else {
+        // Clear both absent and leave fields for other statuses
+        attendance.absentReason = undefined;
+        attendance.leaveReason = undefined;
+        attendance.leaveType = undefined;
+        attendance.isApproved = undefined;
+      }
+      
+      attendance.isManualEntry = true;
+    }
+
+    await attendance.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Status successfully changed to ${status}`,
+      attendance: {
+        id: attendance._id,
+        date: attendance.date,
+        status: attendance.status,
+        reason: reason,
+        isApproved: attendance.isApproved
+      }
+    });
+
+  } catch (error) {
+    console.error("Change status error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to change status"
+    });
+  }
+});
+
+// 🔹 Enhanced Admin: Approve/Reject Leave with Email Notifications
 router.post("/attendance/admin/approve-leave", async (req, res) => {
   try {
-    // Custom authentication for admin endpoints
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
 
@@ -1311,7 +1896,6 @@ router.post("/attendance/admin/approve-leave", async (req, res) => {
       });
     }
 
-    // Verify the token
     let decoded;
     try {
       decoded = jwt.verify(token, JWT_SECRET);
@@ -1323,6 +1907,13 @@ router.post("/attendance/admin/approve-leave", async (req, res) => {
     }
 
     const { attendanceId, isApproved, approvalNotes } = req.body;
+
+    if (typeof isApproved !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        message: "isApproved must be true or false"
+      });
+    }
 
     const attendance = await Attendance.findById(attendanceId);
     if (!attendance) {
@@ -1339,22 +1930,84 @@ router.post("/attendance/admin/approve-leave", async (req, res) => {
       });
     }
 
+    if (attendance.isApproved !== null) {
+      return res.status(400).json({
+        success: false,
+        message: `Leave request has already been ${attendance.isApproved ? 'approved' : 'rejected'}`
+      });
+    }
+
+    // Get admin user details for notification
+    const adminUser = await User.findById(decoded.id);
+    
+    // Get the user who applied for leave
+    const leaveUser = await User.findById(attendance.userId);
+    
     attendance.isApproved = isApproved;
     attendance.approvedBy = decoded.id;
     attendance.approvalDate = new Date();
     attendance.approvalNotes = approvalNotes || '';
+    
+    // Add approval info to notes
+    const approvalInfo = `\n--- ADMIN ACTION ---\n${isApproved ? 'APPROVED' : 'REJECTED'} by ${adminUser?.username || 'Admin'} on ${new Date().toLocaleString()}\nNotes: ${approvalNotes || 'None'}`;
+    attendance.notes = (attendance.notes || '') + approvalInfo;
 
     if (!isApproved) {
       // If rejected, remove the attendance record
       await Attendance.findByIdAndDelete(attendanceId);
       
+      // Send rejection email to user (non-blocking)
+      if (leaveUser && leaveUser.email) {
+        try {
+          await sendLeaveStatusEmail(
+            leaveUser.email, 
+            leaveUser.username, 
+            {
+              date: attendance.date,
+              leaveType: attendance.leaveType,
+              reason: attendance.leaveReason
+            }, 
+            false, 
+            approvalNotes
+          );
+          console.log(`📧 Leave rejection email sent to ${leaveUser.username}`);
+        } catch (emailError) {
+          console.error("❌ Failed to send rejection email:", emailError);
+        }
+      }
+      
       res.status(200).json({
         success: true,
-        message: "Leave request rejected and removed",
-        action: 'rejected'
+        message: "Leave request rejected and removed from records",
+        action: 'rejected',
+        adminAction: {
+          approvedBy: adminUser?.username || 'Admin',
+          approvalDate: new Date(),
+          approvalNotes: approvalNotes || 'None'
+        }
       });
     } else {
       await attendance.save();
+      
+      // Send approval email to user (non-blocking)
+      if (leaveUser && leaveUser.email) {
+        try {
+          await sendLeaveStatusEmail(
+            leaveUser.email, 
+            leaveUser.username, 
+            {
+              date: attendance.date,
+              leaveType: attendance.leaveType,
+              reason: attendance.leaveReason
+            }, 
+            true, 
+            approvalNotes
+          );
+          console.log(`📧 Leave approval email sent to ${leaveUser.username}`);
+        } catch (emailError) {
+          console.error("❌ Failed to send approval email:", emailError);
+        }
+      }
       
       res.status(200).json({
         success: true,
@@ -1362,7 +2015,14 @@ router.post("/attendance/admin/approve-leave", async (req, res) => {
         attendance: {
           id: attendance._id,
           status: attendance.status,
-          approvalStatus: 'approved'
+          approvalStatus: 'approved',
+          leaveType: attendance.leaveType,
+          leaveReason: attendance.leaveReason
+        },
+        adminAction: {
+          approvedBy: adminUser?.username || 'Admin',
+          approvalDate: attendance.approvalDate,
+          approvalNotes: attendance.approvalNotes
         }
       });
     }
@@ -1376,10 +2036,9 @@ router.post("/attendance/admin/approve-leave", async (req, res) => {
   }
 });
 
-// Admin: Get Pending Leave Requests
+// 🔹 Enhanced Admin: Get Pending Leave Requests
 router.get("/attendance/admin/pending-leaves", async (req, res) => {
   try {
-    // Custom authentication for admin endpoints
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
 
@@ -1390,7 +2049,6 @@ router.get("/attendance/admin/pending-leaves", async (req, res) => {
       });
     }
 
-    // Verify the token
     let decoded;
     try {
       decoded = jwt.verify(token, JWT_SECRET);
@@ -1401,35 +2059,57 @@ router.get("/attendance/admin/pending-leaves", async (req, res) => {
       });
     }
 
-    // Find pending leave requests
     const pendingLeaves = await Attendance.find({
       status: 'leave',
       isApproved: null
     }).sort({ createdAt: -1 });
 
-    // Manually fetch user details for each leave since populate might fail
     const leavesWithUserDetails = await Promise.all(
       pendingLeaves.map(async (leave) => {
         try {
           const user = await User.findById(leave.userId, 'username email');
+          const profile = await UserProfile.findOne({ userId: leave.userId }, 'name department jobTitle');
+          
           return {
             ...leave.toObject(),
-            userDetails: user || { username: leave.username, email: leave.email }
+            userDetails: {
+              username: user?.username || leave.username,
+              email: user?.email || leave.email,
+              name: profile?.name || user?.username || leave.username,
+              department: profile?.department || 'Not Set',
+              jobTitle: profile?.jobTitle || 'Not Set'
+            },
+            daysUntilLeave: Math.ceil((new Date(leave.date) - new Date()) / (1000 * 60 * 60 * 24))
           };
         } catch (err) {
           console.error('Error fetching user details for leave:', leave._id, err);
           return {
             ...leave.toObject(),
-            userDetails: { username: leave.username, email: leave.email }
+            userDetails: { 
+              username: leave.username, 
+              email: leave.email,
+              name: leave.username,
+              department: 'Not Set',
+              jobTitle: 'Not Set'
+            },
+            daysUntilLeave: Math.ceil((new Date(leave.date) - new Date()) / (1000 * 60 * 60 * 24))
           };
         }
       })
     );
 
+    // Sort by urgency (soonest leaves first)
+    leavesWithUserDetails.sort((a, b) => a.daysUntilLeave - b.daysUntilLeave);
+
     res.status(200).json({
       success: true,
       pendingLeaves: leavesWithUserDetails,
-      count: leavesWithUserDetails.length
+      count: leavesWithUserDetails.length,
+      summary: {
+        total: leavesWithUserDetails.length,
+        urgent: leavesWithUserDetails.filter(l => l.daysUntilLeave <= 2).length,
+        thisWeek: leavesWithUserDetails.filter(l => l.daysUntilLeave <= 7).length
+      }
     });
 
   } catch (error) {
@@ -1440,10 +2120,10 @@ router.get("/attendance/admin/pending-leaves", async (req, res) => {
     });
   }
 });
-// ADMIN ROUTES - Get All Attendance Records
+
+// 🔹 Admin: Get All Attendance Records
 router.get("/attendance/admin/all", authenticateToken, async (req, res) => {
   try {
-    // Check if user is admin
     if (req.user.role !== 'admin') {
       return res.status(403).json({
         success: false,
@@ -1455,17 +2135,9 @@ router.get("/attendance/admin/all", authenticateToken, async (req, res) => {
     
     let query = {};
     
-    if (date) {
-      query.date = date;
-    }
-    
-    if (userId) {
-      query.userId = userId;
-    }
-    
-    if (status) {
-      query.status = status;
-    }
+    if (date) query.date = date;
+    if (userId) query.userId = userId;
+    if (status) query.status = status;
 
     const attendance = await Attendance.find(query)
       .populate('userId', 'username email')
@@ -1475,9 +2147,24 @@ router.get("/attendance/admin/all", authenticateToken, async (req, res) => {
 
     const total = await Attendance.countDocuments(query);
 
+    // Enhance attendance records with user profile data
+    const enhancedAttendance = await Promise.all(
+      attendance.map(async (record) => {
+        const profile = await UserProfile.findOne({ userId: record.userId }, 'name department workingHours');
+        return {
+          ...record.toObject(),
+          userProfile: profile ? {
+            name: profile.name,
+            department: profile.department,
+            workingHours: profile.workingHours
+          } : null
+        };
+      })
+    );
+
     res.status(200).json({
       success: true,
-      attendance,
+      attendance: enhancedAttendance,
       pagination: {
         current: parseInt(page),
         total: Math.ceil(total / limit),
@@ -1496,7 +2183,7 @@ router.get("/attendance/admin/all", authenticateToken, async (req, res) => {
   }
 });
 
-// Get Today's Attendance Summary (Admin only)
+// 🔹 Enhanced Today's Attendance Summary (Admin only)
 router.get("/attendance/admin/today-summary", authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
@@ -1521,16 +2208,28 @@ router.get("/attendance/admin/today-summary", authenticateToken, async (req, res
       checkedOut: todayAttendance.filter(a => a.checkOut && a.checkOut.time).length,
       stillWorking: todayAttendance.filter(a => a.checkIn && a.checkIn.time && (!a.checkOut || !a.checkOut.time)).length,
       absent: todayAttendance.filter(a => a.status === 'absent').length,
-      leave: todayAttendance.filter(a => a.status === 'leave' && a.isApproved === true).length,
+      autoAbsent: todayAttendance.filter(a => a.status === 'absent' && !a.isManualEntry).length,
+      manualAbsent: todayAttendance.filter(a => a.status === 'absent' && a.isManualEntry).length,
+      approvedLeave: todayAttendance.filter(a => a.status === 'leave' && a.isApproved === true).length,
       pendingLeave: todayAttendance.filter(a => a.status === 'leave' && a.isApproved === null).length,
+      rejectedLeave: todayAttendance.filter(a => a.status === 'leave' && a.isApproved === false).length,
       notMarked: totalUsers - todayAttendance.length
     };
+
+    // Calculate attendance rate
+    const totalMarked = summary.present + summary.absent + summary.approvedLeave;
+    summary.attendanceRate = totalUsers > 0 ? Math.round((totalMarked / totalUsers) * 100) : 0;
 
     res.status(200).json({
       success: true,
       date: today,
       summary,
-      attendance: todayAttendance
+      attendance: todayAttendance,
+      insights: {
+        punctualityRate: summary.present > 0 ? Math.round(((summary.present - summary.late) / summary.present) * 100) : 0,
+        autoAbsentCount: summary.autoAbsent,
+        pendingApprovals: summary.pendingLeave
+      }
     });
 
   } catch (error) {
@@ -1541,4 +2240,31 @@ router.get("/attendance/admin/today-summary", authenticateToken, async (req, res
     });
   }
 });
+
+// 🔹 Admin: Force Run Auto-Absent Check
+router.post("/attendance/admin/run-auto-absent", authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied. Admin only."
+      });
+    }
+
+    await autoMarkAbsentUsers();
+    
+    res.status(200).json({
+      success: true,
+      message: "Auto-absent check completed successfully"
+    });
+
+  } catch (error) {
+    console.error("Force auto-absent error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to run auto-absent check"
+    });
+  }
+});
+
 module.exports = router;
