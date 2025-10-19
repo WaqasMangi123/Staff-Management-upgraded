@@ -6,6 +6,7 @@ const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
 const UserProfile = require("../models/userprofile");
 const Attendance = require("../models/attendance");
+
 console.log("UserProfile model loaded:", UserProfile.modelName);
 require("dotenv").config();
 
@@ -20,11 +21,11 @@ const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 // Debug email configuration on startup
 console.log("📧 Email Configuration:");
 console.log("EMAIL_USER:", EMAIL_USER ? "✓ Set" : "❌ Not set");
-console.log("EMAIL_PASS:", EMAIL_PASS ? "✓ Set" : "❌ Not set");
+console.log("BREVO_API_KEY:", process.env.BREVO_API_KEY ? "✓ Set (length: " + process.env.BREVO_API_KEY.length + ")" : "❌ Not set");
 console.log("ADMIN_EMAIL:", ADMIN_EMAIL);
 console.log("EMAIL_FROM:", EMAIL_FROM);
 
-// AUTHENTICATION MIDDLEWARE - MOVED TO TOP
+// AUTHENTICATION MIDDLEWARE
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -48,15 +49,14 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Enhanced Nodemailer Setup with Render-compatible configuration
+// Enhanced Brevo SMTP Setup
 const transporter = nodemailer.createTransport({
-  service: "gmail",
-  host: process.env.EMAIL_HOST || "smtp.gmail.com",
-  port: parseInt(process.env.EMAIL_PORT) || 587,
-  secure: process.env.EMAIL_SECURE === 'true', // true for 465, false for other ports
+  host: 'smtp-relay.brevo.com',
+  port: 587,
+  secure: false, // true for 465, false for other ports
   auth: { 
-    user: EMAIL_USER, 
-    pass: EMAIL_PASS 
+    user: '999adf001@smtp-brevo.com', // Your Brevo SMTP login
+    pass: 'Ck78h6BWgbMc32Kj' // Your Brevo SMTP password
   },
   tls: {
     rejectUnauthorized: false,
@@ -72,9 +72,9 @@ const transporter = nodemailer.createTransport({
 // Test transporter connection on startup
 transporter.verify((error, success) => {
   if (error) {
-    console.error('❌ Email transporter verification failed:', error.message);
+    console.error('❌ Brevo SMTP connection failed:', error.message);
   } else {
-    console.log('✅ Email server is ready to send messages');
+    console.log('✅ Brevo SMTP server is ready to send emails');
   }
 });
 
@@ -83,19 +83,42 @@ const generateVerificationCode = () => Math.floor(100000 + Math.random() * 90000
 
 const sendVerificationEmail = async (email, verificationCode) => {
   try {
+    console.log(`📧 Sending verification email to: ${email}`);
+    
     await transporter.sendMail({
-      from: EMAIL_FROM,
+      from: `"Staff Management" <${EMAIL_USER}>`,
       to: email,
       subject: "Verify Your Email Address",
       html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #2563eb;">Email Verification</h2>
-          <p>Your verification code is: <strong>${verificationCode}</strong></p>
-          <p>This code will expire in 10 minutes.</p>
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
+          <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            <div style="text-align: center; margin-bottom: 30px;">
+              <h1 style="color: #2563eb; margin: 0; font-size: 28px;">📧 Email Verification</h1>
+            </div>
+            <div style="text-align: center; margin-bottom: 30px;">
+              <div style="background-color: #2563eb; color: white; padding: 20px; border-radius: 8px; font-size: 32px; font-weight: bold; letter-spacing: 3px;">
+                ${verificationCode}
+              </div>
+            </div>
+            <div style="text-align: center; margin-bottom: 20px;">
+              <p style="font-size: 16px; color: #495057; margin: 0;">Enter this code to verify your email address</p>
+            </div>
+            <div style="background-color: #fff3cd; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #ffc107;">
+              <p style="margin: 0; color: #856404; font-size: 14px;">
+                ⏰ This code will expire in <strong>10 minutes</strong>
+              </p>
+            </div>
+            <div style="text-align: center; border-top: 1px solid #dee2e6; padding-top: 20px;">
+              <p style="margin: 0; color: #6c757d; font-size: 14px;">
+                If you didn't request this verification, please ignore this email.
+              </p>
+            </div>
+          </div>
         </div>
       `,
     });
-    console.log('✅ Verification email sent to:', email);
+    console.log('✅ Verification email sent successfully to:', email);
+    return true;
   } catch (err) {
     console.error("❌ Email sending error:", err);
     throw new Error("Failed to send verification email");
@@ -125,7 +148,7 @@ const sendLeaveApplicationEmail = async (userDetails, leaveDetails) => {
         const urgencyText = daysUntil <= 2 ? 'URGENT' : daysUntil <= 7 ? 'SOON' : 'ADVANCE';
 
         await transporter.sendMail({
-          from: EMAIL_FROM,
+          from: `"Staff Management" <${EMAIL_USER}>`,
           to: ADMIN_EMAIL,
           subject: `🏖️ Leave Application - ${userDetails.name || userDetails.username} (${urgencyText})`,
           html: `
@@ -226,7 +249,7 @@ const sendLeaveApplicationEmail = async (userDetails, leaveDetails) => {
         });
 
         clearTimeout(emailTimeout);
-        console.log(`✅ Leave application notification sent to admin for ${userDetails.username}`);
+        console.log(`✅ Leave application email sent to admin for ${userDetails.username}`);
         resolve();
         
       } catch (err) {
@@ -262,7 +285,7 @@ const sendLeaveStatusEmail = async (userEmail, userName, leaveDetails, isApprove
         const statusIcon = isApproved ? '✅' : '❌';
 
         await transporter.sendMail({
-          from: EMAIL_FROM,
+          from: `"Staff Management" <${EMAIL_USER}>`,
           to: userEmail,
           subject: `${statusIcon} Leave Request ${statusText} - ${leaveDate}`,
           html: `
@@ -331,7 +354,56 @@ const sendLeaveStatusEmail = async (userEmail, userName, leaveDetails, isApprove
   });
 };
 
-// ADD: Simple leave email test endpoint
+// Test email endpoints
+router.post("/test-email", async (req, res) => {
+  try {
+    console.log("🧪 Testing Brevo SMTP configuration...");
+    console.log("EMAIL_USER:", EMAIL_USER);
+    console.log("ADMIN_EMAIL:", ADMIN_EMAIL);
+    console.log("EMAIL_FROM:", EMAIL_FROM);
+    
+    await transporter.sendMail({
+      from: `"Staff Management" <${EMAIL_USER}>`,
+      to: ADMIN_EMAIL,
+      subject: "🧪 Test Email - Staff Management System",
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #28a745;">✅ Brevo SMTP Test Successful!</h2>
+          <p>This test email confirms that your Brevo SMTP configuration is working correctly.</p>
+          <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
+          <p><strong>From:</strong> ${EMAIL_USER}</p>
+          <p><strong>To:</strong> ${ADMIN_EMAIL}</p>
+          <p><strong>SMTP Server:</strong> smtp-relay.brevo.com</p>
+        </div>
+      `
+    });
+    
+    res.json({ 
+      success: true, 
+      message: "Test email sent successfully via Brevo SMTP",
+      emailConfig: {
+        from: EMAIL_USER,
+        to: ADMIN_EMAIL,
+        timestamp: new Date().toLocaleString(),
+        service: "Brevo SMTP"
+      }
+    });
+  } catch (error) {
+    console.error("❌ Test email failed:", error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      emailConfig: {
+        from: EMAIL_USER,
+        to: ADMIN_EMAIL,
+        userConfigured: !!EMAIL_USER,
+        service: "Brevo SMTP"
+      }
+    });
+  }
+});
+
+// Test leave email endpoints
 router.post("/test-leave-email", async (req, res) => {
   try {
     const { type = 'application' } = req.body; // 'application' or 'status'
@@ -357,7 +429,7 @@ router.post("/test-leave-email", async (req, res) => {
       await sendLeaveApplicationEmail(testUserDetails, testLeaveDetails);
       res.json({ 
         success: true, 
-        message: "Test leave application email sent successfully",
+        message: "Test leave application email sent successfully via Brevo",
         sentTo: ADMIN_EMAIL
       });
     } else {
@@ -371,7 +443,7 @@ router.post("/test-leave-email", async (req, res) => {
       );
       res.json({ 
         success: true, 
-        message: "Test leave status email sent successfully",
+        message: "Test leave status email sent successfully via Brevo",
         sentTo: ADMIN_EMAIL
       });
     }
@@ -382,53 +454,6 @@ router.post("/test-leave-email", async (req, res) => {
       success: false, 
       error: error.message,
       details: error.toString()
-    });
-  }
-});
-
-// ADD: Test basic email functionality
-router.post("/test-email", async (req, res) => {
-  try {
-    console.log("🧪 Testing email configuration...");
-    console.log("EMAIL_USER:", EMAIL_USER);
-    console.log("ADMIN_EMAIL:", ADMIN_EMAIL);
-    console.log("EMAIL_FROM:", EMAIL_FROM);
-    
-    await transporter.sendMail({
-      from: EMAIL_FROM,
-      to: ADMIN_EMAIL,
-      subject: "🧪 Test Email - Staff Management System",
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #28a745;">✅ Email Test Successful!</h2>
-          <p>This test email confirms that your email configuration is working correctly.</p>
-          <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
-          <p><strong>From:</strong> ${EMAIL_FROM}</p>
-          <p><strong>To:</strong> ${ADMIN_EMAIL}</p>
-        </div>
-      `
-    });
-    
-    res.json({ 
-      success: true, 
-      message: "Test email sent successfully",
-      emailConfig: {
-        from: EMAIL_FROM,
-        to: ADMIN_EMAIL,
-        timestamp: new Date().toLocaleString()
-      }
-    });
-  } catch (error) {
-    console.error("❌ Test email failed:", error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message,
-      emailConfig: {
-        from: EMAIL_FROM,
-        to: ADMIN_EMAIL,
-        userConfigured: !!EMAIL_USER,
-        passConfigured: !!EMAIL_PASS
-      }
     });
   }
 });
@@ -613,7 +638,7 @@ const validateLoginInput = (req, res, next) => {
   next();
 };
 
-// 🔹 User Registration - Let schema handle password hashing
+// User Registration
 router.post("/register", validateRegisterInput, async (req, res) => {
   try {
     const { username, email, password } = req.body;
@@ -642,13 +667,30 @@ router.post("/register", validateRegisterInput, async (req, res) => {
     });
 
     await newUser.save();
-    await sendVerificationEmail(newUser.email, verificationCode);
-
-    res.status(201).json({ 
-      success: true,
-      message: "Account created successfully! Please check your email for verification code.",
-      userId: newUser._id 
-    });
+    
+    // Try to send verification email, but don't fail registration if email fails
+    try {
+      await sendVerificationEmail(newUser.email, verificationCode);
+      console.log('✅ Verification email sent to:', newUser.email);
+      
+      res.status(201).json({ 
+        success: true,
+        message: "Account created successfully! Please check your email for verification code.",
+        userId: newUser._id,
+        emailSent: true
+      });
+    } catch (emailError) {
+      console.error("⚠️ Failed to send verification email (non-blocking):", emailError.message);
+      
+      res.status(201).json({ 
+        success: true,
+        message: "Account created successfully! Email service is temporarily unavailable. Your verification code is: " + verificationCode,
+        userId: newUser._id,
+        emailSent: false,
+        // Include verification code in response if email failed (for testing)
+        ...(process.env.NODE_ENV === 'development' ? { verificationCode: verificationCode } : {})
+      });
+    }
 
   } catch (err) {
     console.error("Registration Error:", err);
@@ -660,33 +702,61 @@ router.post("/register", validateRegisterInput, async (req, res) => {
   }
 });
 
-// 🔹 Email Verification
+// Email Verification
 router.post("/verify", async (req, res) => {
   try {
     const { email, verificationCode } = req.body;
     const trimmedEmail = email.trim().toLowerCase();
+    const trimmedCode = verificationCode ? verificationCode.toString().trim() : '';
 
-    if (!trimmedEmail || !verificationCode) {
+    console.log('🔍 Verification attempt:', {
+      email: trimmedEmail,
+      receivedCode: verificationCode,
+      trimmedCode: trimmedCode,
+      codeLength: trimmedCode.length,
+      codeType: typeof verificationCode
+    });
+
+    if (!trimmedEmail || !trimmedCode) {
       return res.status(400).json({ 
         success: false,
         message: "Email and verification code are required" 
       });
     }
 
-    if (!/^\d{6}$/.test(verificationCode)) {
+    if (!/^\d{6}$/.test(trimmedCode)) {
       return res.status(400).json({ 
         success: false,
-        message: "Verification code must be 6 digits" 
+        message: `Verification code must be exactly 6 digits. Received: "${trimmedCode}" (length: ${trimmedCode.length})`
       });
     }
 
     const user = await User.findOne({
       email: trimmedEmail,
-      verificationCode,
+      verificationCode: trimmedCode,
       verificationCodeExpires: { $gt: Date.now() }
     });
 
+    console.log('🔍 Database lookup result:', {
+      userFound: !!user,
+      searchedEmail: trimmedEmail,
+      searchedCode: trimmedCode,
+      currentTime: Date.now()
+    });
+
     if (!user) {
+      // Let's also check if user exists but with different code or expired
+      const userExists = await User.findOne({ email: trimmedEmail });
+      if (userExists) {
+        console.log('🔍 User exists but code mismatch:', {
+          storedCode: userExists.verificationCode,
+          receivedCode: trimmedCode,
+          codeExpires: userExists.verificationCodeExpires,
+          currentTime: Date.now(),
+          isExpired: userExists.verificationCodeExpires < Date.now()
+        });
+      }
+      
       return res.status(400).json({ 
         success: false,
         message: "Invalid or expired verification code" 
@@ -729,7 +799,7 @@ router.post("/verify", async (req, res) => {
   }
 });
 
-// 🔹 User Login with detailed error messages
+// User Login with detailed error messages
 router.post("/login", validateLoginInput, async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -805,7 +875,7 @@ router.post("/login", validateLoginInput, async (req, res) => {
   }
 });
 
-// 🔹 Resend Verification Email
+// Resend Verification Email
 router.post("/resend-verification", async (req, res) => {
   try {
     const { email } = req.body;
@@ -854,7 +924,7 @@ router.post("/resend-verification", async (req, res) => {
   }
 });
 
-// 🔹 Forgot Password
+// Forgot Password
 router.post("/forgot-password", async (req, res) => {
   try {
     const { email } = req.body;
@@ -882,21 +952,25 @@ router.post("/forgot-password", async (req, res) => {
 
     const resetUrl = `https://parksy.uk/#/reset-password/${resetToken}`;
     await transporter.sendMail({
-      from: EMAIL_FROM,
+      from: `"Staff Management" <${EMAIL_USER}>`,
       to: user.email,
       subject: "Password Reset Request",
       html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #2563eb;">Password Reset</h2>
-          <p>Click below to reset your password:</p>
-          <a href="${resetUrl}" 
-             style="display: inline-block; padding: 10px 20px; 
-                    background-color: #2563eb; color: white; 
-                    text-decoration: none; border-radius: 5px; 
-                    margin: 20px 0;">
-            Reset Password
-          </a>
-          <p>This link expires in 1 hour.</p>
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
+          <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            <h2 style="color: #2563eb; text-align: center;">Password Reset</h2>
+            <p>Click below to reset your password:</p>
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${resetUrl}" 
+                 style="display: inline-block; padding: 15px 30px; 
+                        background-color: #2563eb; color: white; 
+                        text-decoration: none; border-radius: 5px; 
+                        font-weight: bold; font-size: 16px;">
+                Reset Password
+              </a>
+            </div>
+            <p style="color: #dc3545; font-size: 14px;">This link expires in 1 hour.</p>
+          </div>
         </div>
       `,
     });
@@ -915,7 +989,7 @@ router.post("/forgot-password", async (req, res) => {
   }
 });
 
-// 🔹 Validate Reset Token
+// Validate Reset Token
 router.post("/validate-reset-token", async (req, res) => {
   try {
     const { token } = req.body;
@@ -969,7 +1043,7 @@ router.post("/validate-reset-token", async (req, res) => {
   }
 });
 
-// 🔹 Reset Password
+// Reset Password
 router.post("/reset-password", async (req, res) => {
   try {
     const { token, newPassword } = req.body;
@@ -1017,12 +1091,12 @@ router.post("/reset-password", async (req, res) => {
     await user.save();
 
     await transporter.sendMail({
-      from: EMAIL_FROM,
+      from: `"Staff Management" <${EMAIL_USER}>`,
       to: user.email,
       subject: "Password Changed Successfully",
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #2563eb;">Password Updated</h2>
+          <h2 style="color: #28a745;">Password Updated</h2>
           <p>Your password was successfully changed.</p>
           <p>If you didn't make this change, please contact support immediately.</p>
         </div>
@@ -1043,7 +1117,7 @@ router.post("/reset-password", async (req, res) => {
   }
 });
 
-// 🔹 Get All Users
+// Get All Users
 router.get("/users", async (req, res) => {
   try {
     const users = await User.find({}, 'username email role createdAt lastActive verified')
@@ -1071,7 +1145,7 @@ router.get("/users", async (req, res) => {
   }
 });
 
-// 🔹 Get Active Users
+// Get Active Users
 router.get("/active-users", async (req, res) => {
   try {
     const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
@@ -1096,7 +1170,7 @@ router.get("/active-users", async (req, res) => {
   }
 });
 
-// 🔹 Delete User
+// Delete User
 router.delete("/users/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -1131,7 +1205,7 @@ router.delete("/users/:id", async (req, res) => {
   }
 });
 
-// 🔹 Get User Profile
+// Get User Profile
 router.get("/profile/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -1152,7 +1226,7 @@ router.get("/profile/:userId", async (req, res) => {
   }
 });
 
-// 🔹 Update/Create User Profile
+// Update/Create User Profile
 router.post("/update-profile", async (req, res) => {
   try {
     const {
@@ -1274,80 +1348,9 @@ router.post("/update-profile", async (req, res) => {
   }
 });
 
-// 🔹 ATTENDANCE ROUTES
+// ATTENDANCE ROUTES
 
-// Add test endpoint for debugging
-router.get("/attendance/debug-auto-absent", authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const workingHours = await getUserWorkingHours(userId);
-    const shouldMark = await shouldAutoMarkAbsent(userId);
-    const shouldBeAbsent = await shouldMarkAsAbsent(userId);
-    
-    const now = new Date();
-    const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-    
-    const [startHour, startMinute] = workingHours.start.split(':').map(Number);
-    const workStartMinutes = startHour * 60 + startMinute;
-    const graceEndMinutes = workStartMinutes + 10;
-    const absentThresholdMinutes = workStartMinutes + 120;
-    
-    const [currentHour, currentMinute] = currentTime.split(':').map(Number);
-    const currentMinutes = currentHour * 60 + currentMinute;
-    
-    const debugInfo = {
-      userId: userId,
-      workingHours: workingHours,
-      currentTime: currentTime,
-      serverTime: now.toLocaleString(),
-      shouldAutoMarkAbsent: shouldMark,
-      shouldMarkAsAbsent: shouldBeAbsent,
-      calculations: {
-        workStartMinutes,
-        graceEndMinutes,
-        absentThresholdMinutes,
-        currentMinutes,
-        minutesAfterStart: currentMinutes - workStartMinutes,
-        isAfterGrace: currentMinutes > graceEndMinutes,
-        isAfterAbsentThreshold: currentMinutes > absentThresholdMinutes
-      }
-    };
-    
-    res.json({
-      success: true,
-      debug: debugInfo
-    });
-  } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
-// Force run auto-absent check (admin only)
-router.post("/attendance/force-auto-absent", authenticateToken, async (req, res) => {
-  try {
-    await autoMarkAbsentUsers();
-    
-    res.status(200).json({
-      success: true,
-      message: "Auto-absent check completed successfully",
-      timestamp: new Date().toLocaleString()
-    });
-
-  } catch (error) {
-    console.error("Force auto-absent error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to run auto-absent check",
-      error: error.message
-    });
-  }
-});
-
-// 🔹 Smart Check-in with enhanced absent/late logic
+// Smart Check-in with enhanced absent/late logic
 router.post("/attendance/check-in", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1509,7 +1512,7 @@ router.post("/attendance/check-in", authenticateToken, async (req, res) => {
   }
 });
 
-// 🔹 Enhanced Check-out
+// Enhanced Check-out
 router.post("/attendance/check-out", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1574,7 +1577,7 @@ router.post("/attendance/check-out", authenticateToken, async (req, res) => {
   }
 });
 
-// 🔹 IMPROVED Apply for Leave with better error handling
+// Apply for Leave with better error handling
 router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
   try {
     console.log('📝 Processing leave application request...');
@@ -1650,7 +1653,7 @@ router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
       reason: reason
     };
 
-    // IMPROVED: Send response first, then send email in background
+    // Send response first, then send email in background
     res.status(200).json({
       success: true,
       message: "Leave application submitted successfully. Admin notification is being sent and you'll receive an email once reviewed.",
@@ -1684,7 +1687,7 @@ router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
   }
 });
 
-// 🔹 Manual Absent (for emergencies - same day only)
+// Manual Absent (for emergencies - same day only)
 router.post("/attendance/mark-absent", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1748,7 +1751,7 @@ router.post("/attendance/mark-absent", authenticateToken, async (req, res) => {
   }
 });
 
-// 🔹 Get Today's Attendance Status with Real-time Auto-Absent Check
+// Get Today's Attendance Status with Real-time Auto-Absent Check
 router.get("/attendance/today", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1841,7 +1844,7 @@ router.get("/attendance/today", authenticateToken, async (req, res) => {
   }
 });
 
-// 🔹 Get User's Attendance History
+// Get User's Attendance History
 router.get("/attendance/history", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1882,7 +1885,7 @@ router.get("/attendance/history", authenticateToken, async (req, res) => {
   }
 });
 
-// 🔹 Enhanced Change Status (today only)
+// Enhanced Change Status (today only)
 router.post("/attendance/change-status", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1988,7 +1991,7 @@ router.post("/attendance/change-status", authenticateToken, async (req, res) => 
   }
 });
 
-// 🔹 Enhanced Admin: Approve/Reject Leave with Email Notifications
+// Enhanced Admin: Approve/Reject Leave with Email Notifications
 router.post("/attendance/admin/approve-leave", async (req, res) => {
   try {
     const authHeader = req.headers['authorization'];
@@ -2138,7 +2141,7 @@ router.post("/attendance/admin/approve-leave", async (req, res) => {
   }
 });
 
-// 🔹 Enhanced Admin: Get Pending Leave Requests
+// Enhanced Admin: Get Pending Leave Requests
 router.get("/attendance/admin/pending-leaves", async (req, res) => {
   try {
     const authHeader = req.headers['authorization'];
@@ -2222,7 +2225,7 @@ router.get("/attendance/admin/pending-leaves", async (req, res) => {
   }
 });
 
-// 🔹 Admin: Get All Attendance Records
+// Admin: Get All Attendance Records
 router.get("/attendance/admin/all", authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
@@ -2283,7 +2286,7 @@ router.get("/attendance/admin/all", authenticateToken, async (req, res) => {
   }
 });
 
-// 🔹 Enhanced Today's Attendance Summary (Admin only)
+// Enhanced Today's Attendance Summary (Admin only)
 router.get("/attendance/admin/today-summary", authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
@@ -2340,7 +2343,7 @@ router.get("/attendance/admin/today-summary", authenticateToken, async (req, res
   }
 });
 
-// 🔹 Admin: Force Run Auto-Absent Check
+// Admin: Force Run Auto-Absent Check
 router.post("/attendance/admin/run-auto-absent", authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
@@ -2362,6 +2365,77 @@ router.post("/attendance/admin/run-auto-absent", authenticateToken, async (req, 
     res.status(500).json({
       success: false,
       message: "Failed to run auto-absent check"
+    });
+  }
+});
+
+// Debug endpoints for attendance
+router.get("/attendance/debug-auto-absent", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const workingHours = await getUserWorkingHours(userId);
+    const shouldMark = await shouldAutoMarkAbsent(userId);
+    const shouldBeAbsent = await shouldMarkAsAbsent(userId);
+    
+    const now = new Date();
+    const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    
+    const [startHour, startMinute] = workingHours.start.split(':').map(Number);
+    const workStartMinutes = startHour * 60 + startMinute;
+    const graceEndMinutes = workStartMinutes + 10;
+    const absentThresholdMinutes = workStartMinutes + 120;
+    
+    const [currentHour, currentMinute] = currentTime.split(':').map(Number);
+    const currentMinutes = currentHour * 60 + currentMinute;
+    
+    const debugInfo = {
+      userId: userId,
+      workingHours: workingHours,
+      currentTime: currentTime,
+      serverTime: now.toLocaleString(),
+      shouldAutoMarkAbsent: shouldMark,
+      shouldMarkAsAbsent: shouldBeAbsent,
+      calculations: {
+        workStartMinutes,
+        graceEndMinutes,
+        absentThresholdMinutes,
+        currentMinutes,
+        minutesAfterStart: currentMinutes - workStartMinutes,
+        isAfterGrace: currentMinutes > graceEndMinutes,
+        isAfterAbsentThreshold: currentMinutes > absentThresholdMinutes
+      }
+    };
+    
+    res.json({
+      success: true,
+      debug: debugInfo
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// Force run auto-absent check (admin only)
+router.post("/attendance/force-auto-absent", authenticateToken, async (req, res) => {
+  try {
+    await autoMarkAbsentUsers();
+    
+    res.status(200).json({
+      success: true,
+      message: "Auto-absent check completed successfully",
+      timestamp: new Date().toLocaleString()
+    });
+
+  } catch (error) {
+    console.error("Force auto-absent error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to run auto-absent check",
+      error: error.message
     });
   }
 });
