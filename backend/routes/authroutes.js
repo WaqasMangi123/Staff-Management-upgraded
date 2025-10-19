@@ -49,11 +49,11 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Enhanced Brevo SMTP Setup
-const transporter = nodemailer.createTransport({
+// Enhanced Brevo SMTP Setup (Port 2525 for Render Free Tier)
+const transporter = nodemailer.createTransporter({
   host: 'smtp-relay.brevo.com',
-  port: 587,
-  secure: false, // true for 465, false for other ports
+  port: 2525, // Using 2525 as 587 is blocked on Render free tier
+  secure: false, // false for 2525
   auth: { 
     user: '999adf001@smtp-brevo.com', // Your Brevo SMTP login
     pass: 'Ck78h6BWgbMc32Kj' // Your Brevo SMTP password
