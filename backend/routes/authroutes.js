@@ -51,22 +51,13 @@ const authenticateToken = (req, res, next) => {
 // Enhanced Nodemailer Setup with Render-compatible configuration
 const transporter = nodemailer.createTransport({
   service: "gmail",
-  host: process.env.EMAIL_HOST || "smtp.gmail.com",
-  port: parseInt(process.env.EMAIL_PORT) || 587,
-  secure: process.env.EMAIL_SECURE === 'true', // true for 465, false for other ports
   auth: { 
     user: EMAIL_USER, 
     pass: EMAIL_PASS 
   },
   tls: {
-    rejectUnauthorized: false,
-    ciphers: 'SSLv3'
-  },
-  connectionTimeout: 30000, // 30 seconds for slow connections
-  greetingTimeout: 15000, // 15 seconds
-  socketTimeout: 30000, // 30 seconds
-  debug: process.env.NODE_ENV === 'development', // Enable debug in development
-  logger: process.env.NODE_ENV === 'development' // Enable logger in development
+    rejectUnauthorized: false
+  }
 });
 
 // Test transporter connection on startup
