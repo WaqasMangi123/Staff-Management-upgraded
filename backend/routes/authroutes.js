@@ -17,11 +17,11 @@ const EMAIL_FROM = process.env.EMAIL_FROM || `"Staff Management" <${EMAIL_USER}>
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || EMAIL_USER;
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
 
-// Debug email configuration on startup
-console.log("📧 Email Configuration:");
-console.log("EMAIL_USER:", EMAIL_USER ? "✓ Set" : "❌ Not set");
-console.log("BREVO_API_KEY:", process.env.BREVO_API_KEY ? "✓ Set (length: " + process.env.BREVO_API_KEY.length + ")" : "❌ Not set");
+console.log("Email Configuration:");
+console.log("EMAIL_USER:", EMAIL_USER ? "Set" : "Not set");
+console.log("BREVO_API_KEY:", BREVO_API_KEY ? "Set (length: " + BREVO_API_KEY.length + ")" : "Not set");
 console.log("ADMIN_EMAIL:", ADMIN_EMAIL);
 console.log("EMAIL_FROM:", EMAIL_FROM);
 
@@ -49,51 +49,99 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Enhanced Brevo SMTP Setup (Port 2525 for Render Free Tier)
-const transporter = nodemailer.createTransporter({
-  host: 'smtp-relay.brevo.com',
-  port: 2525, // Using 2525 as 587 is blocked on Render free tier
-  secure: false, // false for 2525
-  auth: { 
-    user: '999adf001@smtp-brevo.com', // Your Brevo SMTP login
-    pass: 'Ck78h6BWgbMc32Kj' // Your Brevo SMTP password
-  },
-  tls: {
-    rejectUnauthorized: false,
-    ciphers: 'SSLv3'
-  },
-  connectionTimeout: 30000, // 30 seconds for slow connections
-  greetingTimeout: 15000, // 15 seconds
-  socketTimeout: 30000, // 30 seconds
-  debug: process.env.NODE_ENV === 'development', // Enable debug in development
-  logger: process.env.NODE_ENV === 'development' // Enable logger in development
-});
+// BREVO SMTP Setup (Port 2525 for Render compatibility)
+let smtpTransporter = null;
+try {
+  smtpTransporter = nodemailer.createTransporter({
+    host: 'smtp-relay.brevo.com',
+    port: 2525, // Port 2525 works on Render free tier
+    secure: false,
+    auth: { 
+      user: '999adf001@smtp-brevo.com',
+      pass: 'Ck78h6BWgbMc32Kj'
+    },
+    tls: {
+      rejectUnauthorized: false
+    },
+    connectionTimeout: 30000,
+    greetingTimeout: 15000,
+    socketTimeout: 30000
+  });
 
-// Test transporter connection on startup
-transporter.verify((error, success) => {
-  if (error) {
-    console.error('❌ Brevo SMTP connection failed:', error.message);
-  } else {
-    console.log('✅ Brevo SMTP server is ready to send emails');
+  smtpTransporter.verify((error, success) => {
+    if (error) {
+      console.error('SMTP connection failed:', error.message);
+    } else {
+      console.log('SMTP server ready (Port 2525)');
+    }
+  });
+} catch (error) {
+  console.error('SMTP setup failed:', error.message);
+}
+
+// BREVO API Setup (Fallback)
+let brevoAPI = null;
+try {
+  const { TransactionalEmailsApi, SendSmtpEmail } = require('@getbrevo/brevo');
+  brevoAPI = new TransactionalEmailsApi();
+  brevoAPI.authentications.apiKey.apiKey = BREVO_API_KEY;
+  console.log('Brevo API initialized successfully');
+} catch (error) {
+  console.log('Brevo API not available:', error.message);
+}
+
+// DUAL EMAIL SENDING SYSTEM
+const sendEmailWithFallback = async (emailData) => {
+  // Try SMTP first
+  if (smtpTransporter) {
+    try {
+      const result = await smtpTransporter.sendMail({
+        from: `"Staff Management" <${EMAIL_USER}>`,
+        to: emailData.to,
+        subject: emailData.subject,
+        html: emailData.html
+      });
+      console.log('Email sent via SMTP:', result.messageId);
+      return { success: true, method: 'SMTP', messageId: result.messageId };
+    } catch (error) {
+      console.log('SMTP failed, trying API fallback:', error.message);
+    }
   }
-});
+
+  // Fallback to API
+  if (brevoAPI) {
+    try {
+      const { SendSmtpEmail } = require('@getbrevo/brevo');
+      const apiEmailData = new SendSmtpEmail();
+      apiEmailData.subject = emailData.subject;
+      apiEmailData.sender = { name: "Staff Management", email: EMAIL_USER };
+      apiEmailData.to = [{ email: emailData.to }];
+      apiEmailData.htmlContent = emailData.html;
+
+      const result = await brevoAPI.sendTransacEmail(apiEmailData);
+      console.log('Email sent via API:', result.body.messageId);
+      return { success: true, method: 'API', messageId: result.body.messageId };
+    } catch (error) {
+      console.error('API also failed:', error.message);
+    }
+  }
+
+  throw new Error('Both SMTP and API failed');
+};
 
 // Helper Functions
 const generateVerificationCode = () => Math.floor(100000 + Math.random() * 900000).toString();
 
 const sendVerificationEmail = async (email, verificationCode) => {
   try {
-    console.log(`📧 Sending verification email to: ${email}`);
-    
-    await transporter.sendMail({
-      from: `"Staff Management" <${EMAIL_USER}>`,
+    const result = await sendEmailWithFallback({
       to: email,
       subject: "Verify Your Email Address",
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
           <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
             <div style="text-align: center; margin-bottom: 30px;">
-              <h1 style="color: #2563eb; margin: 0; font-size: 28px;">📧 Email Verification</h1>
+              <h1 style="color: #2563eb; margin: 0; font-size: 28px;">Email Verification</h1>
             </div>
             <div style="text-align: center; margin-bottom: 30px;">
               <div style="background-color: #2563eb; color: white; padding: 20px; border-radius: 8px; font-size: 32px; font-weight: bold; letter-spacing: 3px;">
@@ -105,383 +153,179 @@ const sendVerificationEmail = async (email, verificationCode) => {
             </div>
             <div style="background-color: #fff3cd; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #ffc107;">
               <p style="margin: 0; color: #856404; font-size: 14px;">
-                ⏰ This code will expire in <strong>10 minutes</strong>
-              </p>
-            </div>
-            <div style="text-align: center; border-top: 1px solid #dee2e6; padding-top: 20px;">
-              <p style="margin: 0; color: #6c757d; font-size: 14px;">
-                If you didn't request this verification, please ignore this email.
+                This code will expire in <strong>10 minutes</strong>
               </p>
             </div>
           </div>
         </div>
-      `,
+      `
     });
-    console.log('✅ Verification email sent successfully to:', email);
+    
+    console.log(`Verification email sent via ${result.method} to:`, email);
     return true;
   } catch (err) {
-    console.error("❌ Email sending error:", err);
+    console.error("Failed to send verification email:", err.message);
     throw new Error("Failed to send verification email");
   }
 };
 
-// IMPROVED: Send Leave Application Email to Admin with timeout protection
 const sendLeaveApplicationEmail = async (userDetails, leaveDetails) => {
   return new Promise((resolve) => {
-    // Set a timeout to prevent hanging
-    const emailTimeout = setTimeout(() => {
-      console.log('⚠️ Email sending timeout - resolving anyway');
-      resolve();
-    }, 15000); // 15 second timeout
-
-    const sendEmail = async () => {
+    setTimeout(async () => {
       try {
         const leaveDate = new Date(leaveDetails.date).toLocaleDateString('en-US', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
+          weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
         });
 
         const daysUntil = Math.ceil((new Date(leaveDetails.date) - new Date()) / (1000 * 60 * 60 * 24));
         const urgencyColor = daysUntil <= 2 ? '#dc3545' : daysUntil <= 7 ? '#ffc107' : '#28a745';
         const urgencyText = daysUntil <= 2 ? 'URGENT' : daysUntil <= 7 ? 'SOON' : 'ADVANCE';
 
-        await transporter.sendMail({
-          from: `"Staff Management" <${EMAIL_USER}>`,
+        const result = await sendEmailWithFallback({
           to: ADMIN_EMAIL,
-          subject: `🏖️ Leave Application - ${userDetails.name || userDetails.username} (${urgencyText})`,
+          subject: `Leave Application - ${userDetails.name || userDetails.username} (${urgencyText})`,
           html: `
             <div style="font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
               <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                
-                <!-- Header -->
                 <div style="text-align: center; margin-bottom: 30px;">
-                  <h1 style="color: #2563eb; margin: 0; font-size: 28px;">📋 New Leave Application</h1>
+                  <h1 style="color: #2563eb; margin: 0; font-size: 28px;">New Leave Application</h1>
                   <div style="background-color: ${urgencyColor}; color: white; padding: 8px 15px; border-radius: 20px; display: inline-block; margin-top: 10px; font-weight: bold; font-size: 12px;">
                     ${urgencyText} - ${daysUntil} day(s) until leave
                   </div>
                 </div>
-
-                <!-- Employee Details -->
                 <div style="background-color: #e7f3ff; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #2563eb;">
-                  <h3 style="color: #2563eb; margin: 0 0 15px 0; font-size: 18px;">👤 Employee Information</h3>
-                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                    <div>
-                      <strong style="color: #495057;">Name:</strong><br>
-                      <span style="font-size: 16px;">${userDetails.name || userDetails.username}</span>
-                    </div>
-                    <div>
-                      <strong style="color: #495057;">Email:</strong><br>
-                      <span style="font-size: 16px;">${userDetails.email}</span>
-                    </div>
-                    <div>
-                      <strong style="color: #495057;">Department:</strong><br>
-                      <span style="font-size: 16px;">${userDetails.department || 'Not Set'}</span>
-                    </div>
-                    <div>
-                      <strong style="color: #495057;">Position:</strong><br>
-                      <span style="font-size: 16px;">${userDetails.jobTitle || 'Not Set'}</span>
-                    </div>
-                  </div>
+                  <h3 style="color: #2563eb; margin: 0 0 15px 0;">Employee Information</h3>
+                  <p><strong>Name:</strong> ${userDetails.name || userDetails.username}</p>
+                  <p><strong>Email:</strong> ${userDetails.email}</p>
+                  <p><strong>Department:</strong> ${userDetails.department || 'Not Set'}</p>
+                  <p><strong>Position:</strong> ${userDetails.jobTitle || 'Not Set'}</p>
                 </div>
-
-                <!-- Leave Details -->
-                <div style="background-color: #fff3cd; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #ffc107;">
-                  <h3 style="color: #856404; margin: 0 0 15px 0; font-size: 18px;">📅 Leave Details</h3>
-                  <div style="margin-bottom: 15px;">
-                    <strong style="color: #495057;">Leave Date:</strong><br>
-                    <span style="font-size: 18px; font-weight: bold; color: #856404;">${leaveDate}</span>
-                  </div>
-                  <div style="margin-bottom: 15px;">
-                    <strong style="color: #495057;">Leave Type:</strong><br>
-                    <span style="font-size: 16px; background-color: #ffc107; color: #212529; padding: 4px 8px; border-radius: 4px; font-weight: bold;">
-                      ${leaveDetails.leaveType.charAt(0).toUpperCase() + leaveDetails.leaveType.slice(1)} Leave
-                    </span>
-                  </div>
-                  <div style="margin-bottom: 15px;">
-                    <strong style="color: #495057;">Reason:</strong><br>
-                    <div style="background-color: white; padding: 10px; border-radius: 4px; border: 1px solid #ffeaa7; margin-top: 5px;">
-                      <span style="font-size: 16px; line-height: 1.5;">${leaveDetails.reason}</span>
-                    </div>
-                  </div>
-                  <div>
-                    <strong style="color: #495057;">Application Submitted:</strong><br>
-                    <span style="font-size: 14px; color: #6c757d;">${new Date().toLocaleString()}</span>
-                  </div>
+                <div style="background-color: #fff3cd; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
+                  <h3 style="color: #856404; margin: 0 0 15px 0;">Leave Details</h3>
+                  <p><strong>Date:</strong> ${leaveDate}</p>
+                  <p><strong>Type:</strong> ${leaveDetails.leaveType}</p>
+                  <p><strong>Reason:</strong> ${leaveDetails.reason}</p>
+                  <p><strong>Submitted:</strong> ${new Date().toLocaleString()}</p>
                 </div>
-
-                <!-- Action Required -->
-                <div style="background-color: #d4edda; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #28a745;">
-                  <h3 style="color: #155724; margin: 0 0 15px 0; font-size: 18px;">⚡ Action Required</h3>
-                  <p style="margin: 0 0 15px 0; color: #155724; font-size: 16px;">
-                    Please review and approve/reject this leave application in the admin dashboard.
-                  </p>
-                  <div style="text-align: center; margin-top: 20px;">
-                    <a href="${FRONTEND_URL}/admin/attendance" 
-                       style="background-color: #28a745; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px; display: inline-block;">
-                      📊 View in Admin Dashboard
-                    </a>
-                  </div>
-                </div>
-
-                ${daysUntil <= 7 ? `
-                <!-- Priority Indicator -->
-                <div style="background-color: #f8d7da; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #dc3545;">
-                  <h4 style="color: #721c24; margin: 0 0 10px 0;">⚠️ Priority Notice</h4>
-                  <p style="margin: 0; color: #721c24; font-size: 14px;">
-                    This leave is scheduled for ${daysUntil <= 2 ? 'very soon' : 'next week'}. 
-                    Please review and respond promptly to allow for proper planning.
-                  </p>
-                </div>
-                ` : ''}
-
-                <!-- Footer -->
-                <div style="text-align: center; border-top: 1px solid #dee2e6; padding-top: 20px; margin-top: 30px;">
-                  <p style="margin: 0; color: #6c757d; font-size: 14px;">
-                    This is an automated notification from the Staff Management System.<br>
-                    For any issues, please contact the system administrator.
-                  </p>
+                <div style="text-align: center;">
+                  <a href="${FRONTEND_URL}/admin/attendance" style="background-color: #28a745; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+                    View in Admin Dashboard
+                  </a>
                 </div>
               </div>
             </div>
-          `,
+          `
         });
 
-        clearTimeout(emailTimeout);
-        console.log(`✅ Leave application email sent to admin for ${userDetails.username}`);
+        console.log(`Leave application email sent via ${result.method} for ${userDetails.username}`);
         resolve();
-        
       } catch (err) {
-        clearTimeout(emailTimeout);
-        console.error("❌ Failed to send leave application email:", err.message);
-        resolve(); // Don't throw error to prevent leave application from failing
+        console.error("Failed to send leave application email:", err.message);
+        resolve(); // Don't block leave application
       }
-    };
-
-    sendEmail();
+    }, 100);
   });
 };
 
-// IMPROVED: Send Leave Status Update Email to User with timeout protection
 const sendLeaveStatusEmail = async (userEmail, userName, leaveDetails, isApproved, adminNotes) => {
   return new Promise((resolve) => {
-    const emailTimeout = setTimeout(() => {
-      console.log('⚠️ Status email timeout - resolving anyway');
-      resolve();
-    }, 15000);
-
-    const sendEmail = async () => {
+    setTimeout(async () => {
       try {
         const leaveDate = new Date(leaveDetails.date).toLocaleDateString('en-US', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
+          weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
         });
 
         const statusColor = isApproved ? '#28a745' : '#dc3545';
         const statusText = isApproved ? 'APPROVED' : 'REJECTED';
         const statusIcon = isApproved ? '✅' : '❌';
 
-        await transporter.sendMail({
-          from: `"Staff Management" <${EMAIL_USER}>`,
+        const result = await sendEmailWithFallback({
           to: userEmail,
           subject: `${statusIcon} Leave Request ${statusText} - ${leaveDate}`,
           html: `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
               <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                
-                <!-- Header -->
                 <div style="text-align: center; margin-bottom: 30px;">
                   <h1 style="color: ${statusColor}; margin: 0; font-size: 28px;">${statusIcon} Leave Request ${statusText}</h1>
                 </div>
-
-                <!-- Status Box -->
                 <div style="background-color: ${statusColor}; color: white; padding: 20px; border-radius: 8px; text-align: center; margin-bottom: 25px;">
                   <h2 style="margin: 0; font-size: 24px;">Your leave request has been ${statusText.toLowerCase()}</h2>
                 </div>
-
-                <!-- Leave Details -->
                 <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
-                  <h3 style="color: #495057; margin: 0 0 15px 0;">📋 Leave Details</h3>
-                  <div style="margin-bottom: 10px;">
-                    <strong>Date:</strong> ${leaveDate}
-                  </div>
-                  <div style="margin-bottom: 10px;">
-                    <strong>Type:</strong> ${leaveDetails.leaveType.charAt(0).toUpperCase() + leaveDetails.leaveType.slice(1)} Leave
-                  </div>
-                  <div style="margin-bottom: 10px;">
-                    <strong>Your Reason:</strong> ${leaveDetails.reason}
-                  </div>
-                  <div>
-                    <strong>Decision Date:</strong> ${new Date().toLocaleDateString()}
-                  </div>
+                  <h3 style="color: #495057; margin: 0 0 15px 0;">Leave Details</h3>
+                  <p><strong>Date:</strong> ${leaveDate}</p>
+                  <p><strong>Type:</strong> ${leaveDetails.leaveType}</p>
+                  <p><strong>Your Reason:</strong> ${leaveDetails.reason}</p>
+                  <p><strong>Decision Date:</strong> ${new Date().toLocaleDateString()}</p>
                 </div>
-
                 ${adminNotes ? `
-                <!-- Admin Notes -->
                 <div style="background-color: #e9ecef; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
-                  <h3 style="color: #495057; margin: 0 0 15px 0;">💬 Admin Notes</h3>
-                  <p style="margin: 0; font-style: italic; color: #6c757d;">"${adminNotes}"</p>
+                  <h3 style="color: #495057; margin: 0 0 15px 0;">Admin Notes</h3>
+                  <p style="margin: 0; font-style: italic;">"${adminNotes}"</p>
                 </div>
                 ` : ''}
-
-                <!-- Footer -->
-                <div style="text-align: center; border-top: 1px solid #dee2e6; padding-top: 20px;">
-                  <p style="margin: 0; color: #6c757d; font-size: 14px;">
-                    This notification was sent from the Staff Management System.<br>
-                    For questions, please contact your supervisor or HR department.
-                  </p>
-                </div>
               </div>
             </div>
-          `,
+          `
         });
 
-        clearTimeout(emailTimeout);
-        console.log(`✅ Leave status email sent to ${userEmail} - Status: ${statusText}`);
+        console.log(`Leave status email sent via ${result.method} to ${userEmail}`);
         resolve();
-        
       } catch (err) {
-        clearTimeout(emailTimeout);
-        console.error("❌ Failed to send leave status email:", err.message);
+        console.error("Failed to send leave status email:", err.message);
         resolve();
       }
-    };
-
-    sendEmail();
+    }, 100);
   });
 };
 
-// Test email endpoints
+// Test endpoints
 router.post("/test-email", async (req, res) => {
   try {
-    console.log("🧪 Testing Brevo SMTP configuration...");
-    console.log("EMAIL_USER:", EMAIL_USER);
-    console.log("ADMIN_EMAIL:", ADMIN_EMAIL);
-    console.log("EMAIL_FROM:", EMAIL_FROM);
-    
-    await transporter.sendMail({
-      from: `"Staff Management" <${EMAIL_USER}>`,
+    const result = await sendEmailWithFallback({
       to: ADMIN_EMAIL,
-      subject: "🧪 Test Email - Staff Management System",
+      subject: "Test Email - Staff Management System",
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #28a745;">✅ Brevo SMTP Test Successful!</h2>
-          <p>This test email confirms that your Brevo SMTP configuration is working correctly.</p>
+          <h2 style="color: #28a745;">Email Test Successful!</h2>
+          <p>This test confirms your email system is working.</p>
+          <p><strong>Method:</strong> ${result ? result.method : 'Unknown'}</p>
           <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
           <p><strong>From:</strong> ${EMAIL_USER}</p>
           <p><strong>To:</strong> ${ADMIN_EMAIL}</p>
-          <p><strong>SMTP Server:</strong> smtp-relay.brevo.com</p>
         </div>
       `
     });
     
     res.json({ 
       success: true, 
-      message: "Test email sent successfully via Brevo SMTP",
-      emailConfig: {
-        from: EMAIL_USER,
-        to: ADMIN_EMAIL,
-        timestamp: new Date().toLocaleString(),
-        service: "Brevo SMTP"
-      }
+      message: `Test email sent successfully via ${result.method}`,
+      method: result.method,
+      messageId: result.messageId
     });
   } catch (error) {
-    console.error("❌ Test email failed:", error);
+    console.error("Test email failed:", error);
     res.status(500).json({ 
       success: false, 
-      error: error.message,
-      emailConfig: {
-        from: EMAIL_USER,
-        to: ADMIN_EMAIL,
-        userConfigured: !!EMAIL_USER,
-        service: "Brevo SMTP"
-      }
+      error: error.message
     });
   }
 });
 
-// Test leave email endpoints
-router.post("/test-leave-email", async (req, res) => {
-  try {
-    const { type = 'application' } = req.body; // 'application' or 'status'
-    
-    console.log(`🧪 Testing ${type} email...`);
-    
-    const testUserDetails = {
-      username: 'TestUser',
-      email: ADMIN_EMAIL, // Send to admin email for testing
-      name: 'Test Employee',
-      department: 'IT Department',
-      jobTitle: 'Developer'
-    };
-
-    const testLeaveDetails = {
-      date: '2025-10-25',
-      leaveType: 'vacation',
-      reason: 'This is a test leave application to verify email functionality'
-    };
-
-    if (type === 'application') {
-      console.log('📧 Sending test leave application email...');
-      await sendLeaveApplicationEmail(testUserDetails, testLeaveDetails);
-      res.json({ 
-        success: true, 
-        message: "Test leave application email sent successfully via Brevo",
-        sentTo: ADMIN_EMAIL
-      });
-    } else {
-      console.log('📧 Sending test leave status email...');
-      await sendLeaveStatusEmail(
-        ADMIN_EMAIL,
-        'TestUser',
-        testLeaveDetails,
-        true, // approved
-        'This is a test approval email'
-      );
-      res.json({ 
-        success: true, 
-        message: "Test leave status email sent successfully via Brevo",
-        sentTo: ADMIN_EMAIL
-      });
-    }
-    
-  } catch (error) {
-    console.error("❌ Test leave email failed:", error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message,
-      details: error.toString()
-    });
-  }
-});
-
-// Helper function to get user's working hours from profile
+// Working hours helpers
 const getUserWorkingHours = async (userId) => {
   try {
     const profile = await UserProfile.findOne({ userId });
     if (profile && profile.workingHours && profile.workingHours.start) {
-      return {
-        start: profile.workingHours.start,
-        end: profile.workingHours.end
-      };
+      return { start: profile.workingHours.start, end: profile.workingHours.end };
     }
-    return {
-      start: '09:00',
-      end: '17:00'
-    };
+    return { start: '09:00', end: '17:00' };
   } catch (error) {
     console.error('Error getting user working hours:', error);
-    return {
-      start: '09:00',
-      end: '17:00'
-    };
+    return { start: '09:00', end: '17:00' };
   }
 };
 
-// Helper function to check if user should be auto-marked absent
 const shouldAutoMarkAbsent = async (userId) => {
   try {
     const workingHours = await getUserWorkingHours(userId);
@@ -501,7 +345,6 @@ const shouldAutoMarkAbsent = async (userId) => {
   }
 };
 
-// Helper function to determine if check-in should be marked as absent instead of late
 const shouldMarkAsAbsent = async (userId) => {
   try {
     const workingHours = await getUserWorkingHours(userId);
@@ -510,7 +353,7 @@ const shouldMarkAsAbsent = async (userId) => {
     
     const [startHour, startMinute] = workingHours.start.split(':').map(Number);
     const workStartMinutes = startHour * 60 + startMinute;
-    const absentThresholdMinutes = workStartMinutes + 120; // 2 hours after start time
+    const absentThresholdMinutes = workStartMinutes + 120;
     const [currentHour, currentMinute] = currentTime.split(':').map(Number);
     const currentMinutes = currentHour * 60 + currentMinute;
     
@@ -521,20 +364,13 @@ const shouldMarkAsAbsent = async (userId) => {
   }
 };
 
-// Auto-mark absent users who haven't checked in after grace period
 const autoMarkAbsentUsers = async () => {
   try {
     const today = new Date().toISOString().split('T')[0];
-    const allUsers = await User.find({ 
-      role: 'user', 
-      verified: true 
-    }).select('_id username email');
+    const allUsers = await User.find({ role: 'user', verified: true }).select('_id username email');
     
     for (const user of allUsers) {
-      const existingAttendance = await Attendance.findOne({ 
-        userId: user._id, 
-        date: today 
-      });
+      const existingAttendance = await Attendance.findOne({ userId: user._id, date: today });
       
       if (!existingAttendance) {
         const shouldMarkAbsent = await shouldAutoMarkAbsent(user._id);
@@ -564,7 +400,7 @@ const autoMarkAbsentUsers = async () => {
   }
 };
 
-// Middleware to update lastActive timestamp and run auto-absent check
+// Middleware
 router.use(async (req, res, next) => {
   if (req.user) {
     try {
@@ -581,7 +417,7 @@ router.use(async (req, res, next) => {
   next();
 });
 
-// Input Validation Middleware
+// Validation
 const validateRegisterInput = (req, res, next) => {
   const { username, email, password } = req.body;
   
@@ -645,7 +481,6 @@ router.post("/register", validateRegisterInput, async (req, res) => {
     const trimmedEmail = email.trim().toLowerCase();
     const trimmedPassword = password.trim();
 
-    // Check if user exists
     const existingUser = await User.findOne({ email: trimmedEmail });
     if (existingUser) {
       return res.status(400).json({ 
@@ -668,10 +503,8 @@ router.post("/register", validateRegisterInput, async (req, res) => {
 
     await newUser.save();
     
-    // Try to send verification email, but don't fail registration if email fails
     try {
       await sendVerificationEmail(newUser.email, verificationCode);
-      console.log('✅ Verification email sent to:', newUser.email);
       
       res.status(201).json({ 
         success: true,
@@ -680,15 +513,14 @@ router.post("/register", validateRegisterInput, async (req, res) => {
         emailSent: true
       });
     } catch (emailError) {
-      console.error("⚠️ Failed to send verification email (non-blocking):", emailError.message);
+      console.error("Failed to send verification email:", emailError.message);
       
       res.status(201).json({ 
         success: true,
         message: "Account created successfully! Email service is temporarily unavailable. Your verification code is: " + verificationCode,
         userId: newUser._id,
         emailSent: false,
-        // Include verification code in response if email failed (for testing)
-        ...(process.env.NODE_ENV === 'development' ? { verificationCode: verificationCode } : {})
+        verificationCode: process.env.NODE_ENV === 'development' ? verificationCode : undefined
       });
     }
 
@@ -709,7 +541,7 @@ router.post("/verify", async (req, res) => {
     const trimmedEmail = email.trim().toLowerCase();
     const trimmedCode = verificationCode ? verificationCode.toString().trim() : '';
 
-    console.log('🔍 Verification attempt:', {
+    console.log('Verification attempt:', {
       email: trimmedEmail,
       receivedCode: verificationCode,
       trimmedCode: trimmedCode,
@@ -737,22 +569,13 @@ router.post("/verify", async (req, res) => {
       verificationCodeExpires: { $gt: Date.now() }
     });
 
-    console.log('🔍 Database lookup result:', {
-      userFound: !!user,
-      searchedEmail: trimmedEmail,
-      searchedCode: trimmedCode,
-      currentTime: Date.now()
-    });
-
     if (!user) {
-      // Let's also check if user exists but with different code or expired
       const userExists = await User.findOne({ email: trimmedEmail });
       if (userExists) {
-        console.log('🔍 User exists but code mismatch:', {
+        console.log('User exists but code mismatch:', {
           storedCode: userExists.verificationCode,
           receivedCode: trimmedCode,
           codeExpires: userExists.verificationCodeExpires,
-          currentTime: Date.now(),
           isExpired: userExists.verificationCodeExpires < Date.now()
         });
       }
@@ -768,26 +591,13 @@ router.post("/verify", async (req, res) => {
     user.verificationCodeExpires = undefined;
     await user.save();
 
-    const token = jwt.sign(
-      { 
-        id: user._id,
-        email: user.email,
-        role: user.role 
-      },
-      JWT_SECRET,
-      { expiresIn: "24h" }
-    );
+    const token = jwt.sign({ id: user._id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: "24h" });
 
     res.status(200).json({ 
       success: true,
       message: "Email verified successfully! You are now logged in.",
       token,
-      user: {
-        id: user._id,
-        email: user.email,
-        username: user.username,
-        role: user.role
-      }
+      user: { id: user._id, email: user.email, username: user.username, role: user.role }
     });
 
   } catch (err) {
@@ -799,14 +609,14 @@ router.post("/verify", async (req, res) => {
   }
 });
 
-// User Login with detailed error messages
+// User Login
 router.post("/login", validateLoginInput, async (req, res) => {
   try {
     const { email, password } = req.body;
     const trimmedEmail = email.trim().toLowerCase();
     const trimmedPassword = password.trim();
 
-    const user = await User.findOne({ email: trimmedEmail }).select('+password +verificationCode +verificationCodeExpires');
+    const user = await User.findOne({ email: trimmedEmail }).select('+password');
     
     if (!user) {
       return res.status(401).json({ 
@@ -819,14 +629,7 @@ router.post("/login", validateLoginInput, async (req, res) => {
       return res.status(403).json({ 
         success: false,
         isVerified: false,
-        message: "Please verify your email before logging in. Check your inbox for the verification code."
-      });
-    }
-
-    if (!user.password) {
-      return res.status(500).json({ 
-        success: false,
-        message: "Account error. Please contact support."
+        message: "Please verify your email before logging in."
       });
     }
 
@@ -842,28 +645,13 @@ router.post("/login", validateLoginInput, async (req, res) => {
     user.lastLogin = new Date();
     await user.save();
 
-    const token = jwt.sign(
-      { 
-        id: user._id,
-        email: user.email,
-        role: user.role 
-      },
-      JWT_SECRET,
-      { expiresIn: "24h" }
-    );
-
-    const userResponse = {
-      id: user._id,
-      username: user.username,
-      email: user.email,
-      role: user.role
-    };
+    const token = jwt.sign({ id: user._id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: "24h" });
 
     res.status(200).json({
       success: true,
       message: "Welcome back! Login successful.",
       token,
-      user: userResponse
+      user: { id: user._id, username: user.username, email: user.email, role: user.role }
     });
 
   } catch (err) {
@@ -875,32 +663,23 @@ router.post("/login", validateLoginInput, async (req, res) => {
   }
 });
 
-// Resend Verification Email
+// Resend Verification
 router.post("/resend-verification", async (req, res) => {
   try {
     const { email } = req.body;
     const trimmedEmail = email.trim().toLowerCase();
 
     if (!trimmedEmail) {
-      return res.status(400).json({ 
-        success: false,
-        message: "Email is required" 
-      });
+      return res.status(400).json({ success: false, message: "Email is required" });
     }
 
     const user = await User.findOne({ email: trimmedEmail });
     if (!user) {
-      return res.status(404).json({ 
-        success: false,
-        message: "No account found with this email address" 
-      });
+      return res.status(404).json({ success: false, message: "No account found with this email address" });
     }
 
     if (user.verified) {
-      return res.status(400).json({ 
-        success: false,
-        message: "This account is already verified" 
-      });
+      return res.status(400).json({ success: false, message: "This account is already verified" });
     }
 
     const verificationCode = generateVerificationCode();
@@ -910,17 +689,11 @@ router.post("/resend-verification", async (req, res) => {
 
     await sendVerificationEmail(user.email, verificationCode);
 
-    res.status(200).json({ 
-      success: true,
-      message: "Verification email sent! Please check your inbox." 
-    });
+    res.status(200).json({ success: true, message: "Verification email sent! Please check your inbox." });
 
   } catch (err) {
     console.error("Resend Verification Error:", err);
-    res.status(500).json({ 
-      success: false,
-      message: "Failed to send verification email. Please try again."
-    });
+    res.status(500).json({ success: false, message: "Failed to send verification email. Please try again." });
   }
 });
 
@@ -931,18 +704,12 @@ router.post("/forgot-password", async (req, res) => {
     const trimmedEmail = email.trim().toLowerCase();
 
     if (!trimmedEmail) {
-      return res.status(400).json({ 
-        success: false,
-        message: "Email is required" 
-      });
+      return res.status(400).json({ success: false, message: "Email is required" });
     }
 
     const user = await User.findOne({ email: trimmedEmail });
     if (!user) {
-      return res.status(200).json({ 
-        success: true,
-        message: "If an account exists with this email, a reset link has been sent" 
-      });
+      return res.status(200).json({ success: true, message: "If an account exists, a reset link has been sent" });
     }
 
     const resetToken = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: "1h" });
@@ -951,41 +718,29 @@ router.post("/forgot-password", async (req, res) => {
     await user.save();
 
     const resetUrl = `https://parksy.uk/#/reset-password/${resetToken}`;
-    await transporter.sendMail({
-      from: `"Staff Management" <${EMAIL_USER}>`,
+    
+    await sendEmailWithFallback({
       to: user.email,
       subject: "Password Reset Request",
       html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
-          <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-            <h2 style="color: #2563eb; text-align: center;">Password Reset</h2>
-            <p>Click below to reset your password:</p>
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="${resetUrl}" 
-                 style="display: inline-block; padding: 15px 30px; 
-                        background-color: #2563eb; color: white; 
-                        text-decoration: none; border-radius: 5px; 
-                        font-weight: bold; font-size: 16px;">
-                Reset Password
-              </a>
-            </div>
-            <p style="color: #dc3545; font-size: 14px;">This link expires in 1 hour.</p>
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #2563eb;">Password Reset</h2>
+          <p>Click below to reset your password:</p>
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${resetUrl}" style="background-color: #2563eb; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+              Reset Password
+            </a>
           </div>
+          <p style="color: #dc3545;">This link expires in 1 hour.</p>
         </div>
-      `,
+      `
     });
 
-    res.status(200).json({ 
-      success: true,
-      message: "Password reset link sent to your email" 
-    });
+    res.status(200).json({ success: true, message: "Password reset link sent to your email" });
 
   } catch (err) {
     console.error("Forgot Password Error:", err);
-    res.status(500).json({ 
-      success: false,
-      message: "Server error processing your request"
-    });
+    res.status(500).json({ success: false, message: "Server error processing your request" });
   }
 });
 
@@ -995,14 +750,10 @@ router.post("/validate-reset-token", async (req, res) => {
     const { token } = req.body;
 
     if (!token) {
-      return res.status(400).json({ 
-        valid: false,
-        message: "Token is required" 
-      });
+      return res.status(400).json({ valid: false, message: "Token is required" });
     }
 
     const decoded = jwt.verify(token, JWT_SECRET);
-    
     const user = await User.findOne({
       _id: decoded.id,
       resetPasswordToken: token,
@@ -1010,36 +761,19 @@ router.post("/validate-reset-token", async (req, res) => {
     });
 
     if (!user) {
-      return res.status(200).json({ 
-        valid: false,
-        message: "Invalid or expired token" 
-      });
+      return res.status(200).json({ valid: false, message: "Invalid or expired token" });
     }
 
-    res.status(200).json({ 
-      valid: true,
-      message: "Token is valid",
-      email: user.email
-    });
+    res.status(200).json({ valid: true, message: "Token is valid", email: user.email });
 
   } catch (err) {
     if (err.name === "TokenExpiredError") {
-      return res.status(200).json({ 
-        valid: false,
-        message: "Token has expired" 
-      });
+      return res.status(200).json({ valid: false, message: "Token has expired" });
     }
     if (err.name === "JsonWebTokenError") {
-      return res.status(200).json({ 
-        valid: false,
-        message: "Invalid token" 
-      });
+      return res.status(200).json({ valid: false, message: "Invalid token" });
     }
-    console.error("Token validation error:", err);
-    res.status(500).json({ 
-      valid: false,
-      message: "Server error during token validation" 
-    });
+    res.status(500).json({ valid: false, message: "Server error during token validation" });
   }
 });
 
@@ -1049,21 +783,14 @@ router.post("/reset-password", async (req, res) => {
     const { token, newPassword } = req.body;
 
     if (!token || !newPassword) {
-      return res.status(400).json({ 
-        success: false,
-        message: "Token and new password are required" 
-      });
+      return res.status(400).json({ success: false, message: "Token and new password are required" });
     }
 
     if (newPassword.length < 8) {
-      return res.status(400).json({ 
-        success: false,
-        message: "Password must be at least 8 characters" 
-      });
+      return res.status(400).json({ success: false, message: "Password must be at least 8 characters" });
     }
 
     const decoded = jwt.verify(token, JWT_SECRET);
-    
     const user = await User.findOne({
       _id: decoded.id,
       resetPasswordToken: token,
@@ -1071,18 +798,12 @@ router.post("/reset-password", async (req, res) => {
     }).select('+password');
 
     if (!user) {
-      return res.status(400).json({ 
-        success: false,
-        message: "Invalid or expired reset token" 
-      });
+      return res.status(400).json({ success: false, message: "Invalid or expired reset token" });
     }
 
     const isSamePassword = await user.comparePassword(newPassword.trim());
     if (isSamePassword) {
-      return res.status(400).json({ 
-        success: false,
-        message: "New password must be different from your current password" 
-      });
+      return res.status(400).json({ success: false, message: "New password must be different from current password" });
     }
 
     user.password = newPassword.trim();
@@ -1090,8 +811,7 @@ router.post("/reset-password", async (req, res) => {
     user.resetPasswordExpires = undefined;
     await user.save();
 
-    await transporter.sendMail({
-      from: `"Staff Management" <${EMAIL_USER}>`,
+    await sendEmailWithFallback({
       to: user.email,
       subject: "Password Changed Successfully",
       html: `
@@ -1100,28 +820,21 @@ router.post("/reset-password", async (req, res) => {
           <p>Your password was successfully changed.</p>
           <p>If you didn't make this change, please contact support immediately.</p>
         </div>
-      `,
+      `
     });
 
-    res.status(200).json({ 
-      success: true,
-      message: "Password updated successfully! You can now login with your new password." 
-    });
+    res.status(200).json({ success: true, message: "Password updated successfully!" });
 
   } catch (err) {
     console.error("Reset Password Error:", err);
-    res.status(500).json({ 
-      success: false,
-      message: "Server error processing your request"
-    });
+    res.status(500).json({ success: false, message: "Server error processing your request" });
   }
 });
 
 // Get All Users
 router.get("/users", async (req, res) => {
   try {
-    const users = await User.find({}, 'username email role createdAt lastActive verified')
-      .sort({ createdAt: -1 });
+    const users = await User.find({}, 'username email role createdAt lastActive verified').sort({ createdAt: -1 });
 
     res.status(200).json({
       success: true,
@@ -1137,11 +850,7 @@ router.get("/users", async (req, res) => {
     });
   } catch (err) {
     console.error("Error fetching users:", err);
-    res.status(500).json({
-      success: false,
-      message: "Server error fetching users",
-      error: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
+    res.status(500).json({ success: false, message: "Server error fetching users" });
   }
 });
 
@@ -1155,18 +864,10 @@ router.get("/active-users", async (req, res) => {
       'username email role lastActive'
     ).sort({ lastActive: -1 });
 
-    res.status(200).json({
-      success: true,
-      activeUsers,
-      count: activeUsers.length,
-      lastUpdated: new Date()
-    });
+    res.status(200).json({ success: true, activeUsers, count: activeUsers.length });
   } catch (err) {
     console.error("Error fetching active users:", err);
-    res.status(500).json({
-      success: false,
-      message: "Server error fetching active users"
-    });
+    res.status(500).json({ success: false, message: "Server error fetching active users" });
   }
 });
 
@@ -1177,10 +878,7 @@ router.delete("/users/:id", async (req, res) => {
 
     const user = await User.findById(id);
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found"
-      });
+      return res.status(404).json({ success: false, message: "User not found" });
     }
 
     await User.findByIdAndDelete(id);
@@ -1188,20 +886,12 @@ router.delete("/users/:id", async (req, res) => {
     res.status(200).json({
       success: true,
       message: "User deleted successfully",
-      deletedUser: {
-        id: user._id,
-        username: user.username,
-        email: user.email
-      }
+      deletedUser: { id: user._id, username: user.username, email: user.email }
     });
 
   } catch (err) {
     console.error("Error deleting user:", err);
-    res.status(500).json({
-      success: false,
-      message: "Server error while deleting user",
-      error: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
+    res.status(500).json({ success: false, message: "Server error while deleting user" });
   }
 });
 
@@ -1209,88 +899,57 @@ router.delete("/users/:id", async (req, res) => {
 router.get("/profile/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    
     const profile = await UserProfile.findOne({ userId });
     
-    res.status(200).json({
-      success: true,
-      profile: profile || null
-    });
+    res.status(200).json({ success: true, profile: profile || null });
 
   } catch (error) {
     console.error("Get profile error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch profile"
-    });
+    res.status(500).json({ success: false, message: "Failed to fetch profile" });
   }
 });
 
 // Update/Create User Profile
 router.post("/update-profile", async (req, res) => {
   try {
-    const {
-      userId,
-      name,
-      phone,
-      profilePicture,
-      department,
-      jobTitle,
-      shift,
-      workingHours,
-      skills,
-      yearsWorked,
-      specialTraining,
-      shiftFlexibility,
-      emergencyContact,
-      notes
-    } = req.body;
+    const { userId, name, phone, profilePicture, department, jobTitle, shift, workingHours, skills, yearsWorked, specialTraining, shiftFlexibility, emergencyContact, notes } = req.body;
 
     if (!userId || !name || !phone || !department || !jobTitle || !shift) {
-      return res.status(400).json({
-        success: false,
-        message: "Required fields: name, phone, department, jobTitle, shift"
-      });
+      return res.status(400).json({ success: false, message: "Required fields: name, phone, department, jobTitle, shift" });
     }
 
     if (!workingHours || !workingHours.start || !workingHours.end) {
-      return res.status(400).json({
-        success: false,
-        message: "Working hours start and end times are required"
-      });
+      return res.status(400).json({ success: false, message: "Working hours start and end times are required" });
     }
 
     if (!emergencyContact || !emergencyContact.name || !emergencyContact.relationship || !emergencyContact.phone) {
-      return res.status(400).json({
-        success: false,
-        message: "Emergency contact information is required"
-      });
+      return res.status(400).json({ success: false, message: "Emergency contact information is required" });
     }
 
     let profile = await UserProfile.findOne({ userId });
 
     if (profile) {
-      profile.name = name.trim();
-      profile.phone = phone.trim();
-      profile.profilePicture = profilePicture || null;
-      profile.department = department;
-      profile.jobTitle = jobTitle;
-      profile.shift = shift;
-      profile.workingHours = workingHours;
-      profile.skills = skills || [];
-      profile.yearsWorked = parseInt(yearsWorked) || 0;
-      profile.specialTraining = specialTraining || [];
-      profile.shiftFlexibility = shiftFlexibility || false;
-      profile.emergencyContact = {
-        name: emergencyContact.name.trim(),
-        relationship: emergencyContact.relationship.trim(),
-        phone: emergencyContact.phone.trim()
-      };
-      profile.notes = notes || '';
-      profile.profileComplete = true;
-      profile.lastUpdated = new Date();
-
-      await profile.save();
+      Object.assign(profile, {
+        name: name.trim(),
+        phone: phone.trim(),
+        profilePicture: profilePicture || null,
+        department,
+        jobTitle,
+        shift,
+        workingHours,
+        skills: skills || [],
+        yearsWorked: parseInt(yearsWorked) || 0,
+        specialTraining: specialTraining || [],
+        shiftFlexibility: shiftFlexibility || false,
+        emergencyContact: {
+          name: emergencyContact.name.trim(),
+          relationship: emergencyContact.relationship.trim(),
+          phone: emergencyContact.phone.trim()
+        },
+        notes: notes || '',
+        profileComplete: true,
+        lastUpdated: new Date()
+      });
     } else {
       profile = new UserProfile({
         userId,
@@ -1313,21 +972,14 @@ router.post("/update-profile", async (req, res) => {
         notes: notes || '',
         profileComplete: true
       });
-
-      await profile.save();
     }
+
+    await profile.save();
 
     res.status(200).json({
       success: true,
       message: "Profile updated successfully",
-      profile: {
-        id: profile._id,
-        userId: profile.userId,
-        name: profile.name,
-        department: profile.department,
-        jobTitle: profile.jobTitle,
-        profileComplete: profile.profileComplete
-      }
+      profile: { id: profile._id, userId: profile.userId, name: profile.name, department: profile.department, jobTitle: profile.jobTitle, profileComplete: profile.profileComplete }
     });
 
   } catch (error) {
@@ -1335,22 +987,16 @@ router.post("/update-profile", async (req, res) => {
     
     if (error.name === 'ValidationError') {
       const errorMessages = Object.values(error.errors).map(err => err.message);
-      return res.status(400).json({
-        success: false,
-        message: errorMessages.join(', ')
-      });
+      return res.status(400).json({ success: false, message: errorMessages.join(', ') });
     }
     
-    res.status(500).json({
-      success: false,
-      message: "Failed to update profile"
-    });
+    res.status(500).json({ success: false, message: "Failed to update profile" });
   }
 });
 
 // ATTENDANCE ROUTES
 
-// Smart Check-in with enhanced absent/late logic
+// Smart Check-in
 router.post("/attendance/check-in", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1358,51 +1004,27 @@ router.post("/attendance/check-in", authenticateToken, async (req, res) => {
     
     const user = await User.findById(userId);
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found"
-      });
+      return res.status(404).json({ success: false, message: "User not found" });
     }
 
     const existingAttendance = await Attendance.findOne({ userId, date: today });
     if (existingAttendance) {
-      if (existingAttendance.status === 'absent' && !existingAttendance.checkIn) {
-        const shouldBeAbsent = await shouldMarkAsAbsent(userId);
-        
-        if (shouldBeAbsent) {
-          return res.status(400).json({
-            success: false,
-            message: "Cannot check in - marked as absent due to excessive delay. Please contact admin for manual attendance correction."
-          });
-        }
-      }
-      
       if (existingAttendance.status === 'leave') {
-        return res.status(400).json({
-          success: false,
-          message: "Cannot check in - you have approved leave for today"
-        });
+        return res.status(400).json({ success: false, message: "Cannot check in - you have approved leave for today" });
       }
       
       if (existingAttendance.checkIn && existingAttendance.checkIn.time) {
-        return res.status(400).json({
-          success: false,
-          message: "Already checked in today",
-          checkInTime: existingAttendance.checkIn.time
-        });
+        return res.status(400).json({ success: false, message: "Already checked in today", checkInTime: existingAttendance.checkIn.time });
       }
     }
 
     const checkInTime = new Date();
     const { location, notes } = req.body;
-    
     const workingHours = await getUserWorkingHours(userId);
     
     const [workStartHour, workStartMinute] = workingHours.start.split(':').map(Number);
     const workStartMinutes = workStartHour * 60 + workStartMinute;
-    const checkInHour = checkInTime.getHours();
-    const checkInMinutes = checkInTime.getMinutes();
-    const checkInTotalMinutes = checkInHour * 60 + checkInMinutes;
+    const checkInTotalMinutes = checkInTime.getHours() * 60 + checkInTime.getMinutes();
     
     const delayMinutes = checkInTotalMinutes - workStartMinutes;
     const delayHours = Math.floor(delayMinutes / 60);
@@ -1412,41 +1034,21 @@ router.post("/attendance/check-in", authenticateToken, async (req, res) => {
     let message = `Checked in successfully at ${checkInTime.toLocaleTimeString()}`;
     
     if (delayMinutes > 120) {
-      let attendance;
-      if (existingAttendance) {
-        attendance = existingAttendance;
-        attendance.status = 'absent';
-        attendance.absentReason = `Excessive delay - ${delayHours}h ${delayMins}m late`;
-        attendance.notes = `Attempted check-in at ${checkInTime.toLocaleTimeString()} - marked absent due to excessive delay`;
-        attendance.isManualEntry = true;
-      } else {
-        attendance = new Attendance({
-          userId,
-          username: user.username,
-          email: user.email,
-          date: today,
-          status: 'absent',
-          absentReason: `Excessive delay - ${delayHours}h ${delayMins}m late`,
-          notes: `Attempted check-in at ${checkInTime.toLocaleTimeString()} - marked absent due to excessive delay`,
-          isManualEntry: true
-        });
-      }
+      const attendance = existingAttendance || new Attendance({
+        userId, username: user.username, email: user.email, date: today
+      });
+      
+      attendance.status = 'absent';
+      attendance.absentReason = `Excessive delay - ${delayHours}h ${delayMins}m late`;
+      attendance.notes = `Attempted check-in at ${checkInTime.toLocaleTimeString()} - marked absent due to excessive delay`;
+      attendance.isManualEntry = true;
       
       await attendance.save();
       
       return res.status(400).json({
         success: false,
-        message: `Cannot check in - marked as absent due to excessive delay (${delayHours}h ${delayMins}m late). Please contact admin for manual correction.`,
-        attendance: {
-          id: attendance._id,
-          status: 'absent',
-          reason: attendance.absentReason,
-          delayInfo: {
-            delayMinutes,
-            delayHours,
-            delayMins
-          }
-        }
+        message: `Cannot check in - marked as absent due to excessive delay (${delayHours}h ${delayMins}m late). Contact admin for manual correction.`,
+        attendance: { id: attendance._id, status: 'absent', reason: attendance.absentReason }
       });
       
     } else if (delayMinutes > 10) {
@@ -1454,34 +1056,19 @@ router.post("/attendance/check-in", authenticateToken, async (req, res) => {
       message = `Checked in late at ${checkInTime.toLocaleTimeString()} (${delayHours > 0 ? `${delayHours}h ` : ''}${delayMins}m late)`;
     }
 
-    let attendance;
-    if (existingAttendance) {
-      attendance = existingAttendance;
-      attendance.checkIn = {
-        time: checkInTime,
-        location: location || 'Office',
-        ipAddress: req.ip,
-        deviceInfo: req.headers['user-agent']
-      };
-      attendance.status = status;
-      if (status === 'late') {
-        attendance.notes = `Late arrival - ${delayHours > 0 ? `${delayHours}h ` : ''}${delayMins}m after start time`;
-      }
-    } else {
-      attendance = new Attendance({
-        userId,
-        username: user.username,
-        email: user.email,
-        date: today,
-        checkIn: {
-          time: checkInTime,
-          location: location || 'Office',
-          ipAddress: req.ip,
-          deviceInfo: req.headers['user-agent']
-        },
-        status: status,
-        notes: status === 'late' ? `Late arrival - ${delayHours > 0 ? `${delayHours}h ` : ''}${delayMins}m after start time` : (notes || '')
-      });
+    const attendance = existingAttendance || new Attendance({
+      userId, username: user.username, email: user.email, date: today
+    });
+    
+    attendance.checkIn = {
+      time: checkInTime,
+      location: location || 'Office',
+      ipAddress: req.ip,
+      deviceInfo: req.headers['user-agent']
+    };
+    attendance.status = status;
+    if (status === 'late') {
+      attendance.notes = `Late arrival - ${delayHours > 0 ? `${delayHours}h ` : ''}${delayMins}m after start time`;
     }
 
     await attendance.save();
@@ -1494,25 +1081,17 @@ router.post("/attendance/check-in", authenticateToken, async (req, res) => {
         checkInTime: attendance.checkIn.time,
         status: attendance.status,
         isLate: attendance.status === 'late',
-        delayInfo: {
-          delayMinutes,
-          delayHours,
-          delayMins
-        },
         workingHours: workingHours
       }
     });
 
   } catch (error) {
     console.error("Check-in error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to check in"
-    });
+    res.status(500).json({ success: false, message: "Failed to check in" });
   }
 });
 
-// Enhanced Check-out
+// Check-out
 router.post("/attendance/check-out", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1520,18 +1099,11 @@ router.post("/attendance/check-out", authenticateToken, async (req, res) => {
     
     const attendance = await Attendance.findOne({ userId, date: today });
     if (!attendance || !attendance.checkIn || !attendance.checkIn.time) {
-      return res.status(400).json({
-        success: false,
-        message: "No check-in record found for today"
-      });
+      return res.status(400).json({ success: false, message: "No check-in record found for today" });
     }
 
     if (attendance.checkOut && attendance.checkOut.time) {
-      return res.status(400).json({
-        success: false,
-        message: "Already checked out today",
-        checkOutTime: attendance.checkOut.time
-      });
+      return res.status(400).json({ success: false, message: "Already checked out today", checkOutTime: attendance.checkOut.time });
     }
 
     const checkOutTime = new Date();
@@ -1570,58 +1142,38 @@ router.post("/attendance/check-out", authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error("Check-out error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to check out"
-    });
+    res.status(500).json({ success: false, message: "Failed to check out" });
   }
 });
 
-// Apply for Leave with better error handling
+// Apply for Leave
 router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
   try {
-    console.log('📝 Processing leave application request...');
+    console.log('Processing leave application...');
     const userId = req.user.id;
     const { reason, date, leaveType } = req.body;
     
-    console.log('📝 Request data:', { userId, reason: reason?.substring(0, 50) + '...', date, leaveType });
-    
     if (!reason || !date || !leaveType) {
-      return res.status(400).json({
-        success: false,
-        message: "Reason, date, and leave type are required"
-      });
+      return res.status(400).json({ success: false, message: "Reason, date, and leave type are required" });
     }
     
     const today = new Date().toISOString().split('T')[0];
     const leaveDate = new Date(date).toISOString().split('T')[0];
     
-    console.log('📝 Date validation:', { today, leaveDate, isValid: leaveDate > today });
-    
     if (leaveDate <= today) {
-      return res.status(400).json({
-        success: false,
-        message: "Leave can only be applied for future dates. For today or past dates, contact your admin directly."
-      });
+      return res.status(400).json({ success: false, message: "Leave can only be applied for future dates. For today or past dates, contact your admin directly." });
     }
     
     const user = await User.findById(userId);
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found"
-      });
+      return res.status(404).json({ success: false, message: "User not found" });
     }
 
     const existingAttendance = await Attendance.findOne({ userId, date: leaveDate });
     if (existingAttendance) {
-      return res.status(400).json({
-        success: false,
-        message: "Attendance already marked for this date"
-      });
+      return res.status(400).json({ success: false, message: "Attendance already marked for this date" });
     }
 
-    console.log('💾 Saving attendance record...');
     const attendance = new Attendance({
       userId,
       username: user.username,
@@ -1636,7 +1188,6 @@ router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
     });
 
     await attendance.save();
-    console.log('✅ Attendance record saved successfully');
 
     const userProfile = await UserProfile.findOne({ userId });
     const userDetails = {
@@ -1647,16 +1198,11 @@ router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
       jobTitle: userProfile?.jobTitle || 'Not Set'
     };
 
-    const leaveDetails = {
-      date: leaveDate,
-      leaveType: leaveType,
-      reason: reason
-    };
+    const leaveDetails = { date: leaveDate, leaveType: leaveType, reason: reason };
 
-    // Send response first, then send email in background
     res.status(200).json({
       success: true,
-      message: "Leave application submitted successfully. Admin notification is being sent and you'll receive an email once reviewed.",
+      message: "Leave application submitted successfully. Admin notification is being sent.",
       attendance: {
         id: attendance._id,
         date: attendance.date,
@@ -1667,91 +1213,23 @@ router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
       }
     });
 
-    // Send email notification in background (non-blocking)
-    console.log('📧 Sending email notification to admin...');
+    // Send email in background
     setImmediate(async () => {
       try {
         await sendLeaveApplicationEmail(userDetails, leaveDetails);
-        console.log(`✅ Leave application email sent to admin for ${user.username}`);
+        console.log(`Leave application email sent for ${user.username}`);
       } catch (emailError) {
-        console.error("❌ Background email notification failed:", emailError);
+        console.error("Background email failed:", emailError);
       }
     });
 
   } catch (error) {
-    console.error("❌ Apply leave error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to apply for leave: " + error.message
-    });
+    console.error("Apply leave error:", error);
+    res.status(500).json({ success: false, message: "Failed to apply for leave: " + error.message });
   }
 });
 
-// Manual Absent (for emergencies - same day only)
-router.post("/attendance/mark-absent", authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { reason } = req.body;
-    const today = new Date().toISOString().split('T')[0];
-    
-    if (!reason) {
-      return res.status(400).json({
-        success: false,
-        message: "Reason is required for marking absent"
-      });
-    }
-    
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found"
-      });
-    }
-
-    const existingAttendance = await Attendance.findOne({ userId, date: today });
-    if (existingAttendance) {
-      return res.status(400).json({
-        success: false,
-        message: "Attendance already marked for today"
-      });
-    }
-
-    const attendance = new Attendance({
-      userId,
-      username: user.username,
-      email: user.email,
-      date: today,
-      status: 'absent',
-      notes: `Manual absent - Reason: ${reason}`,
-      absentReason: reason,
-      isManualEntry: true,
-      createdBy: userId
-    });
-
-    await attendance.save();
-
-    res.status(200).json({
-      success: true,
-      message: "Successfully marked as absent for today",
-      attendance: {
-        id: attendance._id,
-        date: attendance.date,
-        status: attendance.status,
-        reason: reason
-      }
-    });
-
-  } catch (error) {
-    console.error("Mark absent error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to mark absent"
-    });
-  }
-});
-
-// Get Today's Attendance Status with Real-time Auto-Absent Check
+// Get Today's Attendance
 router.get("/attendance/today", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1777,7 +1255,7 @@ router.get("/attendance/today", authenticateToken, async (req, res) => {
         });
         
         await attendance.save();
-        console.log(`Real-time auto-marked ${user.username} as absent for ${today}`);
+        console.log(`Real-time auto-marked ${user.username} as absent`);
       }
     }
     
@@ -1787,13 +1265,7 @@ router.get("/attendance/today", authenticateToken, async (req, res) => {
         attendance: null,
         status: 'not-checked-in',
         workingHours: workingHours,
-        shouldAutoMarkAbsent: shouldMarkAbsent,
-        graceTimeInfo: {
-          workStart: workingHours.start,
-          gracePeriod: '10 minutes',
-          graceEnd: `${workingHours.start.split(':')[0]}:${(parseInt(workingHours.start.split(':')[1]) + 10).toString().padStart(2, '0')}`,
-          currentTime: new Date().toLocaleTimeString()
-        }
+        shouldAutoMarkAbsent: shouldMarkAbsent
       });
     }
 
@@ -1804,11 +1276,7 @@ router.get("/attendance/today", authenticateToken, async (req, res) => {
     } else if (attendance.status === 'leave') {
       status = 'leave';
     } else if (attendance.checkIn && attendance.checkIn.time) {
-      if (attendance.checkOut && attendance.checkOut.time) {
-        status = 'checked-out';
-      } else {
-        status = 'checked-in';
-      }
+      status = attendance.checkOut && attendance.checkOut.time ? 'checked-out' : 'checked-in';
     }
 
     res.status(200).json({
@@ -1837,14 +1305,11 @@ router.get("/attendance/today", authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error("Get today attendance error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to get attendance status"
-    });
+    res.status(500).json({ success: false, message: "Failed to get attendance status" });
   }
 });
 
-// Get User's Attendance History
+// Get Attendance History
 router.get("/attendance/history", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1858,11 +1323,7 @@ router.get("/attendance/history", authenticateToken, async (req, res) => {
       query.date = { $gte: startDate, $lte: endDate };
     }
 
-    const attendance = await Attendance.find(query)
-      .sort({ date: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
-
+    const attendance = await Attendance.find(query).sort({ date: -1 }).limit(limit * 1).skip((page - 1) * limit);
     const total = await Attendance.countDocuments(query);
 
     res.status(200).json({
@@ -1878,171 +1339,38 @@ router.get("/attendance/history", authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error("Get attendance history error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to get attendance history"
-    });
+    res.status(500).json({ success: false, message: "Failed to get attendance history" });
   }
 });
 
-// Enhanced Change Status (today only)
-router.post("/attendance/change-status", authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { status, reason, date } = req.body;
-    const today = new Date().toISOString().split('T')[0];
-    
-    if (date !== today) {
-      return res.status(400).json({
-        success: false,
-        message: "Status can only be changed for today"
-      });
-    }
-    
-    if (!status || !reason) {
-      return res.status(400).json({
-        success: false,
-        message: "Status and reason are required"
-      });
-    }
-    
-    const validStatuses = ['present', 'absent', 'late', 'half-day', 'leave'];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid status. Valid options: present, absent, late, half-day, leave"
-      });
-    }
-    
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found"
-      });
-    }
-
-    let attendance = await Attendance.findOne({ userId, date: today });
-    
-    if (!attendance) {
-      attendance = new Attendance({
-        userId,
-        username: user.username,
-        email: user.email,
-        date: today,
-        status: status,
-        notes: `Status change: ${status} - Reason: ${reason}`,
-        isManualEntry: true,
-        createdBy: userId
-      });
-      
-      if (status === 'absent') {
-        attendance.absentReason = reason;
-      } else if (status === 'leave') {
-        attendance.leaveReason = reason;
-        attendance.isApproved = null;
-      }
-    } else {
-      const oldStatus = attendance.status;
-      attendance.status = status;
-      attendance.notes = attendance.notes ? 
-        `${attendance.notes}\n--- Status Changed from ${oldStatus} to ${status} ---\nReason: ${reason}` : 
-        `Status change: ${status} - Reason: ${reason}`;
-      
-      if (status === 'absent') {
-        attendance.absentReason = reason;
-        attendance.leaveReason = undefined;
-        attendance.leaveType = undefined;
-        attendance.isApproved = undefined;
-      } else if (status === 'leave') {
-        attendance.leaveReason = reason;
-        attendance.isApproved = null;
-        attendance.absentReason = undefined;
-      } else {
-        attendance.absentReason = undefined;
-        attendance.leaveReason = undefined;
-        attendance.leaveType = undefined;
-        attendance.isApproved = undefined;
-      }
-      
-      attendance.isManualEntry = true;
-    }
-
-    await attendance.save();
-
-    res.status(200).json({
-      success: true,
-      message: `Status successfully changed to ${status}`,
-      attendance: {
-        id: attendance._id,
-        date: attendance.date,
-        status: attendance.status,
-        reason: reason,
-        isApproved: attendance.isApproved
-      }
-    });
-
-  } catch (error) {
-    console.error("Change status error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to change status"
-    });
-  }
-});
-
-// Enhanced Admin: Approve/Reject Leave with Email Notifications
+// Admin: Approve/Reject Leave
 router.post("/attendance/admin/approve-leave", async (req, res) => {
   try {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
 
     if (!token) {
-      return res.status(401).json({
-        success: false,
-        message: "Access token required"
-      });
+      return res.status(401).json({ success: false, message: "Access token required" });
     }
 
-    let decoded;
-    try {
-      decoded = jwt.verify(token, JWT_SECRET);
-    } catch (err) {
-      return res.status(403).json({
-        success: false,
-        message: "Invalid or expired token"
-      });
-    }
-
+    const decoded = jwt.verify(token, JWT_SECRET);
     const { attendanceId, isApproved, approvalNotes } = req.body;
 
     if (typeof isApproved !== 'boolean') {
-      return res.status(400).json({
-        success: false,
-        message: "isApproved must be true or false"
-      });
+      return res.status(400).json({ success: false, message: "isApproved must be true or false" });
     }
 
     const attendance = await Attendance.findById(attendanceId);
     if (!attendance) {
-      return res.status(404).json({
-        success: false,
-        message: "Attendance record not found"
-      });
+      return res.status(404).json({ success: false, message: "Attendance record not found" });
     }
 
     if (attendance.status !== 'leave') {
-      return res.status(400).json({
-        success: false,
-        message: "This is not a leave request"
-      });
+      return res.status(400).json({ success: false, message: "This is not a leave request" });
     }
 
     if (attendance.isApproved !== null) {
-      return res.status(400).json({
-        success: false,
-        message: `Leave request has already been ${attendance.isApproved ? 'approved' : 'rejected'}`
-      });
+      return res.status(400).json({ success: false, message: `Leave request already ${attendance.isApproved ? 'approved' : 'rejected'}` });
     }
 
     const adminUser = await User.findById(decoded.id);
@@ -2062,20 +1390,14 @@ router.post("/attendance/admin/approve-leave", async (req, res) => {
       if (leaveUser && leaveUser.email) {
         setImmediate(async () => {
           try {
-            await sendLeaveStatusEmail(
-              leaveUser.email, 
-              leaveUser.username, 
-              {
-                date: attendance.date,
-                leaveType: attendance.leaveType,
-                reason: attendance.leaveReason
-              }, 
-              false, 
-              approvalNotes
-            );
-            console.log(`📧 Leave rejection email sent to ${leaveUser.username}`);
+            await sendLeaveStatusEmail(leaveUser.email, leaveUser.username, {
+              date: attendance.date,
+              leaveType: attendance.leaveType,
+              reason: attendance.leaveReason
+            }, false, approvalNotes);
+            console.log(`Leave rejection email sent to ${leaveUser.username}`);
           } catch (emailError) {
-            console.error("❌ Failed to send rejection email:", emailError);
+            console.error("Failed to send rejection email:", emailError);
           }
         });
       }
@@ -2083,12 +1405,7 @@ router.post("/attendance/admin/approve-leave", async (req, res) => {
       res.status(200).json({
         success: true,
         message: "Leave request rejected and removed from records",
-        action: 'rejected',
-        adminAction: {
-          approvedBy: adminUser?.username || 'Admin',
-          approvalDate: new Date(),
-          approvalNotes: approvalNotes || 'None'
-        }
+        action: 'rejected'
       });
     } else {
       await attendance.save();
@@ -2096,20 +1413,14 @@ router.post("/attendance/admin/approve-leave", async (req, res) => {
       if (leaveUser && leaveUser.email) {
         setImmediate(async () => {
           try {
-            await sendLeaveStatusEmail(
-              leaveUser.email, 
-              leaveUser.username, 
-              {
-                date: attendance.date,
-                leaveType: attendance.leaveType,
-                reason: attendance.leaveReason
-              }, 
-              true, 
-              approvalNotes
-            );
-            console.log(`📧 Leave approval email sent to ${leaveUser.username}`);
+            await sendLeaveStatusEmail(leaveUser.email, leaveUser.username, {
+              date: attendance.date,
+              leaveType: attendance.leaveType,
+              reason: attendance.leaveReason
+            }, true, approvalNotes);
+            console.log(`Leave approval email sent to ${leaveUser.username}`);
           } catch (emailError) {
-            console.error("❌ Failed to send approval email:", emailError);
+            console.error("Failed to send approval email:", emailError);
           }
         });
       }
@@ -2120,54 +1431,30 @@ router.post("/attendance/admin/approve-leave", async (req, res) => {
         attendance: {
           id: attendance._id,
           status: attendance.status,
-          approvalStatus: 'approved',
-          leaveType: attendance.leaveType,
-          leaveReason: attendance.leaveReason
-        },
-        adminAction: {
-          approvedBy: adminUser?.username || 'Admin',
-          approvalDate: attendance.approvalDate,
-          approvalNotes: attendance.approvalNotes
+          approvalStatus: 'approved'
         }
       });
     }
 
   } catch (error) {
     console.error("Approve leave error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to process leave approval"
-    });
+    res.status(500).json({ success: false, message: "Failed to process leave approval" });
   }
 });
 
-// Enhanced Admin: Get Pending Leave Requests
+// Get Pending Leaves
 router.get("/attendance/admin/pending-leaves", async (req, res) => {
   try {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
 
     if (!token) {
-      return res.status(401).json({
-        success: false,
-        message: "Access token required"
-      });
+      return res.status(401).json({ success: false, message: "Access token required" });
     }
 
-    let decoded;
-    try {
-      decoded = jwt.verify(token, JWT_SECRET);
-    } catch (err) {
-      return res.status(403).json({
-        success: false,
-        message: "Invalid or expired token"
-      });
-    }
+    jwt.verify(token, JWT_SECRET);
 
-    const pendingLeaves = await Attendance.find({
-      status: 'leave',
-      isApproved: null
-    }).sort({ createdAt: -1 });
+    const pendingLeaves = await Attendance.find({ status: 'leave', isApproved: null }).sort({ createdAt: -1 });
 
     const leavesWithUserDetails = await Promise.all(
       pendingLeaves.map(async (leave) => {
@@ -2187,7 +1474,6 @@ router.get("/attendance/admin/pending-leaves", async (req, res) => {
             daysUntilLeave: Math.ceil((new Date(leave.date) - new Date()) / (1000 * 60 * 60 * 24))
           };
         } catch (err) {
-          console.error('Error fetching user details for leave:', leave._id, err);
           return {
             ...leave.toObject(),
             userDetails: { 
@@ -2218,90 +1504,19 @@ router.get("/attendance/admin/pending-leaves", async (req, res) => {
 
   } catch (error) {
     console.error("Get pending leaves error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to get pending leave requests"
-    });
+    res.status(500).json({ success: false, message: "Failed to get pending leave requests" });
   }
 });
 
-// Admin: Get All Attendance Records
-router.get("/attendance/admin/all", authenticateToken, async (req, res) => {
-  try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: "Access denied. Admin only."
-      });
-    }
-
-    const { page = 1, limit = 20, date, userId, status } = req.query;
-    
-    let query = {};
-    
-    if (date) query.date = date;
-    if (userId) query.userId = userId;
-    if (status) query.status = status;
-
-    const attendance = await Attendance.find(query)
-      .populate('userId', 'username email')
-      .sort({ date: -1, 'checkIn.time': -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
-
-    const total = await Attendance.countDocuments(query);
-
-    const enhancedAttendance = await Promise.all(
-      attendance.map(async (record) => {
-        const profile = await UserProfile.findOne({ userId: record.userId }, 'name department workingHours');
-        return {
-          ...record.toObject(),
-          userProfile: profile ? {
-            name: profile.name,
-            department: profile.department,
-            workingHours: profile.workingHours
-          } : null
-        };
-      })
-    );
-
-    res.status(200).json({
-      success: true,
-      attendance: enhancedAttendance,
-      pagination: {
-        current: parseInt(page),
-        total: Math.ceil(total / limit),
-        hasNext: page * limit < total,
-        hasPrev: page > 1
-      },
-      totalRecords: total
-    });
-
-  } catch (error) {
-    console.error("Get all attendance error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to get attendance records"
-    });
-  }
-});
-
-// Enhanced Today's Attendance Summary (Admin only)
+// Admin: Today's Summary
 router.get("/attendance/admin/today-summary", authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: "Access denied. Admin only."
-      });
+      return res.status(403).json({ success: false, message: "Admin access required" });
     }
 
     const today = new Date().toISOString().split('T')[0];
-    
-    const todayAttendance = await Attendance.find({ date: today })
-      .populate('userId', 'username email')
-      .sort({ 'checkIn.time': 1 });
-
+    const todayAttendance = await Attendance.find({ date: today }).populate('userId', 'username email').sort({ 'checkIn.time': 1 });
     const totalUsers = await User.countDocuments({ role: 'user', verified: true });
     
     const summary = {
@@ -2315,7 +1530,6 @@ router.get("/attendance/admin/today-summary", authenticateToken, async (req, res
       manualAbsent: todayAttendance.filter(a => a.status === 'absent' && a.isManualEntry).length,
       approvedLeave: todayAttendance.filter(a => a.status === 'leave' && a.isApproved === true).length,
       pendingLeave: todayAttendance.filter(a => a.status === 'leave' && a.isApproved === null).length,
-      rejectedLeave: todayAttendance.filter(a => a.status === 'leave' && a.isApproved === false).length,
       notMarked: totalUsers - todayAttendance.length
     };
 
@@ -2336,107 +1550,7 @@ router.get("/attendance/admin/today-summary", authenticateToken, async (req, res
 
   } catch (error) {
     console.error("Get today summary error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to get today's attendance summary"
-    });
-  }
-});
-
-// Admin: Force Run Auto-Absent Check
-router.post("/attendance/admin/run-auto-absent", authenticateToken, async (req, res) => {
-  try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: "Access denied. Admin only."
-      });
-    }
-
-    await autoMarkAbsentUsers();
-    
-    res.status(200).json({
-      success: true,
-      message: "Auto-absent check completed successfully"
-    });
-
-  } catch (error) {
-    console.error("Force auto-absent error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to run auto-absent check"
-    });
-  }
-});
-
-// Debug endpoints for attendance
-router.get("/attendance/debug-auto-absent", authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const workingHours = await getUserWorkingHours(userId);
-    const shouldMark = await shouldAutoMarkAbsent(userId);
-    const shouldBeAbsent = await shouldMarkAsAbsent(userId);
-    
-    const now = new Date();
-    const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-    
-    const [startHour, startMinute] = workingHours.start.split(':').map(Number);
-    const workStartMinutes = startHour * 60 + startMinute;
-    const graceEndMinutes = workStartMinutes + 10;
-    const absentThresholdMinutes = workStartMinutes + 120;
-    
-    const [currentHour, currentMinute] = currentTime.split(':').map(Number);
-    const currentMinutes = currentHour * 60 + currentMinute;
-    
-    const debugInfo = {
-      userId: userId,
-      workingHours: workingHours,
-      currentTime: currentTime,
-      serverTime: now.toLocaleString(),
-      shouldAutoMarkAbsent: shouldMark,
-      shouldMarkAsAbsent: shouldBeAbsent,
-      calculations: {
-        workStartMinutes,
-        graceEndMinutes,
-        absentThresholdMinutes,
-        currentMinutes,
-        minutesAfterStart: currentMinutes - workStartMinutes,
-        isAfterGrace: currentMinutes > graceEndMinutes,
-        isAfterAbsentThreshold: currentMinutes > absentThresholdMinutes
-      }
-    };
-    
-    res.json({
-      success: true,
-      debug: debugInfo
-    });
-  } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
-// Force run auto-absent check (admin only)
-router.post("/attendance/force-auto-absent", authenticateToken, async (req, res) => {
-  try {
-    await autoMarkAbsentUsers();
-    
-    res.status(200).json({
-      success: true,
-      message: "Auto-absent check completed successfully",
-      timestamp: new Date().toLocaleString()
-    });
-
-  } catch (error) {
-    console.error("Force auto-absent error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to run auto-absent check",
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: "Failed to get today's attendance summary" });
   }
 });
 
