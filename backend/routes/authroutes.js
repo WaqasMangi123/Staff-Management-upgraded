@@ -3,7 +3,7 @@ const router = express.Router();
 const User = require("../models/user");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const nodemailer = require("nodemailer");
+const brevo = require('@getbrevo/brevo');
 const UserProfile = require("../models/userprofile");
 const Attendance = require("../models/attendance");
 console.log("UserProfile model loaded:", UserProfile.modelName);
@@ -20,7 +20,7 @@ const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 // Debug email configuration on startup
 console.log("📧 Email Configuration:");
 console.log("EMAIL_USER:", EMAIL_USER ? "✓ Set" : "❌ Not set");
-console.log("EMAIL_PASS:", EMAIL_PASS ? "✓ Set" : "❌ Not set");
+console.log("BREVO_API_KEY:", process.env.BREVO_API_KEY ? "✓ Set" : "❌ Not set");
 console.log("ADMIN_EMAIL:", ADMIN_EMAIL);
 console.log("EMAIL_FROM:", EMAIL_FROM);
 
@@ -48,56 +48,45 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Enhanced Nodemailer Setup with Render-compatible configuration
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  host: process.env.EMAIL_HOST || "smtp.gmail.com",
-  port: parseInt(process.env.EMAIL_PORT) || 465,
-  secure: process.env.EMAIL_SECURE === 'true', // true for 465, false for other ports
-  auth: { 
-    user: EMAIL_USER, 
-    pass: EMAIL_PASS 
-  },
-  tls: {
-    rejectUnauthorized: false,
-    ciphers: 'SSLv3'
-  },
-  connectionTimeout: 30000, // 30 seconds for slow connections
-  greetingTimeout: 15000, // 15 seconds
-  socketTimeout: 30000, // 30 seconds
-  debug: process.env.NODE_ENV === 'development', // Enable debug in development
-  logger: process.env.NODE_ENV === 'development' // Enable logger in development
-});
-
-// Test transporter connection on startup
-transporter.verify((error, success) => {
-  if (error) {
-    console.error('❌ Email transporter verification failed:', error.message);
-  } else {
-    console.log('✅ Email server is ready to send messages');
-  }
-});
+// Configure Brevo
+let apiInstance = null;
+if (process.env.BREVO_API_KEY) {
+  const defaultClient = brevo.ApiClient.instance;
+  const apiKey = defaultClient.authentications['api-key'];
+  apiKey.apiKey = process.env.BREVO_API_KEY;
+  
+  apiInstance = new brevo.TransactionalEmailsApi();
+  console.log('✅ Brevo configured');
+} else {
+  console.error('❌ BREVO_API_KEY not found in environment variables');
+}
 
 // Helper Functions
 const generateVerificationCode = () => Math.floor(100000 + Math.random() * 900000).toString();
 
 const sendVerificationEmail = async (email, verificationCode) => {
   try {
-    await transporter.sendMail({
-      from: EMAIL_FROM,
-      to: email,
-      subject: "Verify Your Email Address",
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #2563eb;">Email Verification</h2>
-          <p>Your verification code is: <strong>${verificationCode}</strong></p>
-          <p>This code will expire in 10 minutes.</p>
-        </div>
-      `,
-    });
+    if (!apiInstance) {
+      throw new Error("Brevo API not configured");
+    }
+    
+    const sendSmtpEmail = new brevo.SendSmtpEmail();
+    
+    sendSmtpEmail.subject = "Verify Your Email Address";
+    sendSmtpEmail.to = [{ email: email }];
+    sendSmtpEmail.sender = { name: "Staff Management", email: EMAIL_USER };
+    sendSmtpEmail.htmlContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #2563eb;">Email Verification</h2>
+        <p>Your verification code is: <strong>${verificationCode}</strong></p>
+        <p>This code will expire in 10 minutes.</p>
+      </div>
+    `;
+
+    await apiInstance.sendTransacEmail(sendSmtpEmail);
     console.log('✅ Verification email sent to:', email);
   } catch (err) {
-    console.error("❌ Email sending error:", err);
+    console.error("❌ Brevo email error:", err);
     throw new Error("Failed to send verification email");
   }
 };
@@ -113,6 +102,10 @@ const sendLeaveApplicationEmail = async (userDetails, leaveDetails) => {
 
     const sendEmail = async () => {
       try {
+        if (!apiInstance) {
+          throw new Error("Brevo API not configured");
+        }
+
         const leaveDate = new Date(leaveDetails.date).toLocaleDateString('en-US', {
           weekday: 'long',
           year: 'numeric',
@@ -124,106 +117,108 @@ const sendLeaveApplicationEmail = async (userDetails, leaveDetails) => {
         const urgencyColor = daysUntil <= 2 ? '#dc3545' : daysUntil <= 7 ? '#ffc107' : '#28a745';
         const urgencyText = daysUntil <= 2 ? 'URGENT' : daysUntil <= 7 ? 'SOON' : 'ADVANCE';
 
-        await transporter.sendMail({
-          from: EMAIL_FROM,
-          to: ADMIN_EMAIL,
-          subject: `🏖️ Leave Application - ${userDetails.name || userDetails.username} (${urgencyText})`,
-          html: `
-            <div style="font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
-              <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                
-                <!-- Header -->
-                <div style="text-align: center; margin-bottom: 30px;">
-                  <h1 style="color: #2563eb; margin: 0; font-size: 28px;">📋 New Leave Application</h1>
-                  <div style="background-color: ${urgencyColor}; color: white; padding: 8px 15px; border-radius: 20px; display: inline-block; margin-top: 10px; font-weight: bold; font-size: 12px;">
-                    ${urgencyText} - ${daysUntil} day(s) until leave
-                  </div>
-                </div>
-
-                <!-- Employee Details -->
-                <div style="background-color: #e7f3ff; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #2563eb;">
-                  <h3 style="color: #2563eb; margin: 0 0 15px 0; font-size: 18px;">👤 Employee Information</h3>
-                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                    <div>
-                      <strong style="color: #495057;">Name:</strong><br>
-                      <span style="font-size: 16px;">${userDetails.name || userDetails.username}</span>
-                    </div>
-                    <div>
-                      <strong style="color: #495057;">Email:</strong><br>
-                      <span style="font-size: 16px;">${userDetails.email}</span>
-                    </div>
-                    <div>
-                      <strong style="color: #495057;">Department:</strong><br>
-                      <span style="font-size: 16px;">${userDetails.department || 'Not Set'}</span>
-                    </div>
-                    <div>
-                      <strong style="color: #495057;">Position:</strong><br>
-                      <span style="font-size: 16px;">${userDetails.jobTitle || 'Not Set'}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Leave Details -->
-                <div style="background-color: #fff3cd; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #ffc107;">
-                  <h3 style="color: #856404; margin: 0 0 15px 0; font-size: 18px;">📅 Leave Details</h3>
-                  <div style="margin-bottom: 15px;">
-                    <strong style="color: #495057;">Leave Date:</strong><br>
-                    <span style="font-size: 18px; font-weight: bold; color: #856404;">${leaveDate}</span>
-                  </div>
-                  <div style="margin-bottom: 15px;">
-                    <strong style="color: #495057;">Leave Type:</strong><br>
-                    <span style="font-size: 16px; background-color: #ffc107; color: #212529; padding: 4px 8px; border-radius: 4px; font-weight: bold;">
-                      ${leaveDetails.leaveType.charAt(0).toUpperCase() + leaveDetails.leaveType.slice(1)} Leave
-                    </span>
-                  </div>
-                  <div style="margin-bottom: 15px;">
-                    <strong style="color: #495057;">Reason:</strong><br>
-                    <div style="background-color: white; padding: 10px; border-radius: 4px; border: 1px solid #ffeaa7; margin-top: 5px;">
-                      <span style="font-size: 16px; line-height: 1.5;">${leaveDetails.reason}</span>
-                    </div>
-                  </div>
-                  <div>
-                    <strong style="color: #495057;">Application Submitted:</strong><br>
-                    <span style="font-size: 14px; color: #6c757d;">${new Date().toLocaleString()}</span>
-                  </div>
-                </div>
-
-                <!-- Action Required -->
-                <div style="background-color: #d4edda; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #28a745;">
-                  <h3 style="color: #155724; margin: 0 0 15px 0; font-size: 18px;">⚡ Action Required</h3>
-                  <p style="margin: 0 0 15px 0; color: #155724; font-size: 16px;">
-                    Please review and approve/reject this leave application in the admin dashboard.
-                  </p>
-                  <div style="text-align: center; margin-top: 20px;">
-                    <a href="${FRONTEND_URL}/admin/attendance" 
-                       style="background-color: #28a745; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px; display: inline-block;">
-                      📊 View in Admin Dashboard
-                    </a>
-                  </div>
-                </div>
-
-                ${daysUntil <= 7 ? `
-                <!-- Priority Indicator -->
-                <div style="background-color: #f8d7da; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #dc3545;">
-                  <h4 style="color: #721c24; margin: 0 0 10px 0;">⚠️ Priority Notice</h4>
-                  <p style="margin: 0; color: #721c24; font-size: 14px;">
-                    This leave is scheduled for ${daysUntil <= 2 ? 'very soon' : 'next week'}. 
-                    Please review and respond promptly to allow for proper planning.
-                  </p>
-                </div>
-                ` : ''}
-
-                <!-- Footer -->
-                <div style="text-align: center; border-top: 1px solid #dee2e6; padding-top: 20px; margin-top: 30px;">
-                  <p style="margin: 0; color: #6c757d; font-size: 14px;">
-                    This is an automated notification from the Staff Management System.<br>
-                    For any issues, please contact the system administrator.
-                  </p>
+        const sendSmtpEmail = new brevo.SendSmtpEmail();
+        
+        sendSmtpEmail.subject = `🏖️ Leave Application - ${userDetails.name || userDetails.username} (${urgencyText})`;
+        sendSmtpEmail.to = [{ email: ADMIN_EMAIL }];
+        sendSmtpEmail.sender = { name: "Staff Management", email: EMAIL_USER };
+        sendSmtpEmail.htmlContent = `
+          <div style="font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
+            <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+              
+              <!-- Header -->
+              <div style="text-align: center; margin-bottom: 30px;">
+                <h1 style="color: #2563eb; margin: 0; font-size: 28px;">📋 New Leave Application</h1>
+                <div style="background-color: ${urgencyColor}; color: white; padding: 8px 15px; border-radius: 20px; display: inline-block; margin-top: 10px; font-weight: bold; font-size: 12px;">
+                  ${urgencyText} - ${daysUntil} day(s) until leave
                 </div>
               </div>
+
+              <!-- Employee Details -->
+              <div style="background-color: #e7f3ff; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #2563eb;">
+                <h3 style="color: #2563eb; margin: 0 0 15px 0; font-size: 18px;">👤 Employee Information</h3>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                  <div>
+                    <strong style="color: #495057;">Name:</strong><br>
+                    <span style="font-size: 16px;">${userDetails.name || userDetails.username}</span>
+                  </div>
+                  <div>
+                    <strong style="color: #495057;">Email:</strong><br>
+                    <span style="font-size: 16px;">${userDetails.email}</span>
+                  </div>
+                  <div>
+                    <strong style="color: #495057;">Department:</strong><br>
+                    <span style="font-size: 16px;">${userDetails.department || 'Not Set'}</span>
+                  </div>
+                  <div>
+                    <strong style="color: #495057;">Position:</strong><br>
+                    <span style="font-size: 16px;">${userDetails.jobTitle || 'Not Set'}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Leave Details -->
+              <div style="background-color: #fff3cd; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #ffc107;">
+                <h3 style="color: #856404; margin: 0 0 15px 0; font-size: 18px;">📅 Leave Details</h3>
+                <div style="margin-bottom: 15px;">
+                  <strong style="color: #495057;">Leave Date:</strong><br>
+                  <span style="font-size: 18px; font-weight: bold; color: #856404;">${leaveDate}</span>
+                </div>
+                <div style="margin-bottom: 15px;">
+                  <strong style="color: #495057;">Leave Type:</strong><br>
+                  <span style="font-size: 16px; background-color: #ffc107; color: #212529; padding: 4px 8px; border-radius: 4px; font-weight: bold;">
+                    ${leaveDetails.leaveType.charAt(0).toUpperCase() + leaveDetails.leaveType.slice(1)} Leave
+                  </span>
+                </div>
+                <div style="margin-bottom: 15px;">
+                  <strong style="color: #495057;">Reason:</strong><br>
+                  <div style="background-color: white; padding: 10px; border-radius: 4px; border: 1px solid #ffeaa7; margin-top: 5px;">
+                    <span style="font-size: 16px; line-height: 1.5;">${leaveDetails.reason}</span>
+                  </div>
+                </div>
+                <div>
+                  <strong style="color: #495057;">Application Submitted:</strong><br>
+                  <span style="font-size: 14px; color: #6c757d;">${new Date().toLocaleString()}</span>
+                </div>
+              </div>
+
+              <!-- Action Required -->
+              <div style="background-color: #d4edda; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #28a745;">
+                <h3 style="color: #155724; margin: 0 0 15px 0; font-size: 18px;">⚡ Action Required</h3>
+                <p style="margin: 0 0 15px 0; color: #155724; font-size: 16px;">
+                  Please review and approve/reject this leave application in the admin dashboard.
+                </p>
+                <div style="text-align: center; margin-top: 20px;">
+                  <a href="${FRONTEND_URL}/admin/attendance" 
+                     style="background-color: #28a745; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px; display: inline-block;">
+                    📊 View in Admin Dashboard
+                  </a>
+                </div>
+              </div>
+
+              ${daysUntil <= 7 ? `
+              <!-- Priority Indicator -->
+              <div style="background-color: #f8d7da; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #dc3545;">
+                <h4 style="color: #721c24; margin: 0 0 10px 0;">⚠️ Priority Notice</h4>
+                <p style="margin: 0; color: #721c24; font-size: 14px;">
+                  This leave is scheduled for ${daysUntil <= 2 ? 'very soon' : 'next week'}. 
+                  Please review and respond promptly to allow for proper planning.
+                </p>
+              </div>
+              ` : ''}
+
+              <!-- Footer -->
+              <div style="text-align: center; border-top: 1px solid #dee2e6; padding-top: 20px; margin-top: 30px;">
+                <p style="margin: 0; color: #6c757d; font-size: 14px;">
+                  This is an automated notification from the Staff Management System.<br>
+                  For any issues, please contact the system administrator.
+                </p>
+              </div>
             </div>
-          `,
-        });
+          </div>
+        `;
+
+        await apiInstance.sendTransacEmail(sendSmtpEmail);
 
         clearTimeout(emailTimeout);
         console.log(`✅ Leave application notification sent to admin for ${userDetails.username}`);
@@ -250,6 +245,10 @@ const sendLeaveStatusEmail = async (userEmail, userName, leaveDetails, isApprove
 
     const sendEmail = async () => {
       try {
+        if (!apiInstance) {
+          throw new Error("Brevo API not configured");
+        }
+
         const leaveDate = new Date(leaveDetails.date).toLocaleDateString('en-US', {
           weekday: 'long',
           year: 'numeric',
@@ -261,60 +260,62 @@ const sendLeaveStatusEmail = async (userEmail, userName, leaveDetails, isApprove
         const statusText = isApproved ? 'APPROVED' : 'REJECTED';
         const statusIcon = isApproved ? '✅' : '❌';
 
-        await transporter.sendMail({
-          from: EMAIL_FROM,
-          to: userEmail,
-          subject: `${statusIcon} Leave Request ${statusText} - ${leaveDate}`,
-          html: `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
-              <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                
-                <!-- Header -->
-                <div style="text-align: center; margin-bottom: 30px;">
-                  <h1 style="color: ${statusColor}; margin: 0; font-size: 28px;">${statusIcon} Leave Request ${statusText}</h1>
-                </div>
+        const sendSmtpEmail = new brevo.SendSmtpEmail();
+        
+        sendSmtpEmail.subject = `${statusIcon} Leave Request ${statusText} - ${leaveDate}`;
+        sendSmtpEmail.to = [{ email: userEmail }];
+        sendSmtpEmail.sender = { name: "Staff Management", email: EMAIL_USER };
+        sendSmtpEmail.htmlContent = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
+            <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+              
+              <!-- Header -->
+              <div style="text-align: center; margin-bottom: 30px;">
+                <h1 style="color: ${statusColor}; margin: 0; font-size: 28px;">${statusIcon} Leave Request ${statusText}</h1>
+              </div>
 
-                <!-- Status Box -->
-                <div style="background-color: ${statusColor}; color: white; padding: 20px; border-radius: 8px; text-align: center; margin-bottom: 25px;">
-                  <h2 style="margin: 0; font-size: 24px;">Your leave request has been ${statusText.toLowerCase()}</h2>
-                </div>
+              <!-- Status Box -->
+              <div style="background-color: ${statusColor}; color: white; padding: 20px; border-radius: 8px; text-align: center; margin-bottom: 25px;">
+                <h2 style="margin: 0; font-size: 24px;">Your leave request has been ${statusText.toLowerCase()}</h2>
+              </div>
 
-                <!-- Leave Details -->
-                <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
-                  <h3 style="color: #495057; margin: 0 0 15px 0;">📋 Leave Details</h3>
-                  <div style="margin-bottom: 10px;">
-                    <strong>Date:</strong> ${leaveDate}
-                  </div>
-                  <div style="margin-bottom: 10px;">
-                    <strong>Type:</strong> ${leaveDetails.leaveType.charAt(0).toUpperCase() + leaveDetails.leaveType.slice(1)} Leave
-                  </div>
-                  <div style="margin-bottom: 10px;">
-                    <strong>Your Reason:</strong> ${leaveDetails.reason}
-                  </div>
-                  <div>
-                    <strong>Decision Date:</strong> ${new Date().toLocaleDateString()}
-                  </div>
+              <!-- Leave Details -->
+              <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
+                <h3 style="color: #495057; margin: 0 0 15px 0;">📋 Leave Details</h3>
+                <div style="margin-bottom: 10px;">
+                  <strong>Date:</strong> ${leaveDate}
                 </div>
-
-                ${adminNotes ? `
-                <!-- Admin Notes -->
-                <div style="background-color: #e9ecef; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
-                  <h3 style="color: #495057; margin: 0 0 15px 0;">💬 Admin Notes</h3>
-                  <p style="margin: 0; font-style: italic; color: #6c757d;">"${adminNotes}"</p>
+                <div style="margin-bottom: 10px;">
+                  <strong>Type:</strong> ${leaveDetails.leaveType.charAt(0).toUpperCase() + leaveDetails.leaveType.slice(1)} Leave
                 </div>
-                ` : ''}
-
-                <!-- Footer -->
-                <div style="text-align: center; border-top: 1px solid #dee2e6; padding-top: 20px;">
-                  <p style="margin: 0; color: #6c757d; font-size: 14px;">
-                    This notification was sent from the Staff Management System.<br>
-                    For questions, please contact your supervisor or HR department.
-                  </p>
+                <div style="margin-bottom: 10px;">
+                  <strong>Your Reason:</strong> ${leaveDetails.reason}
+                </div>
+                <div>
+                  <strong>Decision Date:</strong> ${new Date().toLocaleDateString()}
                 </div>
               </div>
+
+              ${adminNotes ? `
+              <!-- Admin Notes -->
+              <div style="background-color: #e9ecef; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
+                <h3 style="color: #495057; margin: 0 0 15px 0;">💬 Admin Notes</h3>
+                <p style="margin: 0; font-style: italic; color: #6c757d;">"${adminNotes}"</p>
+              </div>
+              ` : ''}
+
+              <!-- Footer -->
+              <div style="text-align: center; border-top: 1px solid #dee2e6; padding-top: 20px;">
+                <p style="margin: 0; color: #6c757d; font-size: 14px;">
+                  This notification was sent from the Staff Management System.<br>
+                  For questions, please contact your supervisor or HR department.
+                </p>
+              </div>
             </div>
-          `,
-        });
+          </div>
+        `;
+
+        await apiInstance.sendTransacEmail(sendSmtpEmail);
 
         clearTimeout(emailTimeout);
         console.log(`✅ Leave status email sent to ${userEmail} - Status: ${statusText}`);
@@ -394,20 +395,26 @@ router.post("/test-email", async (req, res) => {
     console.log("ADMIN_EMAIL:", ADMIN_EMAIL);
     console.log("EMAIL_FROM:", EMAIL_FROM);
     
-    await transporter.sendMail({
-      from: EMAIL_FROM,
-      to: ADMIN_EMAIL,
-      subject: "🧪 Test Email - Staff Management System",
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #28a745;">✅ Email Test Successful!</h2>
-          <p>This test email confirms that your email configuration is working correctly.</p>
-          <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
-          <p><strong>From:</strong> ${EMAIL_FROM}</p>
-          <p><strong>To:</strong> ${ADMIN_EMAIL}</p>
-        </div>
-      `
-    });
+    if (!apiInstance) {
+      throw new Error("Brevo API not configured");
+    }
+
+    const sendSmtpEmail = new brevo.SendSmtpEmail();
+    
+    sendSmtpEmail.subject = "🧪 Test Email - Staff Management System";
+    sendSmtpEmail.to = [{ email: ADMIN_EMAIL }];
+    sendSmtpEmail.sender = { name: "Staff Management", email: EMAIL_USER };
+    sendSmtpEmail.htmlContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #28a745;">✅ Email Test Successful!</h2>
+        <p>This test email confirms that your email configuration is working correctly.</p>
+        <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
+        <p><strong>From:</strong> ${EMAIL_FROM}</p>
+        <p><strong>To:</strong> ${ADMIN_EMAIL}</p>
+      </div>
+    `;
+
+    await apiInstance.sendTransacEmail(sendSmtpEmail);
     
     res.json({ 
       success: true, 
@@ -426,8 +433,7 @@ router.post("/test-email", async (req, res) => {
       emailConfig: {
         from: EMAIL_FROM,
         to: ADMIN_EMAIL,
-        userConfigured: !!EMAIL_USER,
-        passConfigured: !!EMAIL_PASS
+        brevoConfigured: !!apiInstance
       }
     });
   }
@@ -880,26 +886,33 @@ router.post("/forgot-password", async (req, res) => {
     user.resetPasswordExpires = Date.now() + 3600000;
     await user.save();
 
+    if (!apiInstance) {
+      throw new Error("Brevo API not configured");
+    }
+
     const resetUrl = `https://parksy.uk/#/reset-password/${resetToken}`;
-    await transporter.sendMail({
-      from: EMAIL_FROM,
-      to: user.email,
-      subject: "Password Reset Request",
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #2563eb;">Password Reset</h2>
-          <p>Click below to reset your password:</p>
-          <a href="${resetUrl}" 
-             style="display: inline-block; padding: 10px 20px; 
-                    background-color: #2563eb; color: white; 
-                    text-decoration: none; border-radius: 5px; 
-                    margin: 20px 0;">
-            Reset Password
-          </a>
-          <p>This link expires in 1 hour.</p>
-        </div>
-      `,
-    });
+    
+    const sendSmtpEmail = new brevo.SendSmtpEmail();
+    
+    sendSmtpEmail.subject = "Password Reset Request";
+    sendSmtpEmail.to = [{ email: user.email }];
+    sendSmtpEmail.sender = { name: "Staff Management", email: EMAIL_USER };
+    sendSmtpEmail.htmlContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #2563eb;">Password Reset</h2>
+        <p>Click below to reset your password:</p>
+        <a href="${resetUrl}" 
+           style="display: inline-block; padding: 10px 20px; 
+                  background-color: #2563eb; color: white; 
+                  text-decoration: none; border-radius: 5px; 
+                  margin: 20px 0;">
+          Reset Password
+        </a>
+        <p>This link expires in 1 hour.</p>
+      </div>
+    `;
+
+    await apiInstance.sendTransacEmail(sendSmtpEmail);
 
     res.status(200).json({ 
       success: true,
@@ -1016,18 +1029,24 @@ router.post("/reset-password", async (req, res) => {
     user.resetPasswordExpires = undefined;
     await user.save();
 
-    await transporter.sendMail({
-      from: EMAIL_FROM,
-      to: user.email,
-      subject: "Password Changed Successfully",
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #2563eb;">Password Updated</h2>
-          <p>Your password was successfully changed.</p>
-          <p>If you didn't make this change, please contact support immediately.</p>
-        </div>
-      `,
-    });
+    if (!apiInstance) {
+      throw new Error("Brevo API not configured");
+    }
+
+    const sendSmtpEmail = new brevo.SendSmtpEmail();
+    
+    sendSmtpEmail.subject = "Password Changed Successfully";
+    sendSmtpEmail.to = [{ email: user.email }];
+    sendSmtpEmail.sender = { name: "Staff Management", email: EMAIL_USER };
+    sendSmtpEmail.htmlContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #2563eb;">Password Updated</h2>
+        <p>Your password was successfully changed.</p>
+        <p>If you didn't make this change, please contact support immediately.</p>
+      </div>
+    `;
+
+    await apiInstance.sendTransacEmail(sendSmtpEmail);
 
     res.status(200).json({ 
       success: true,
