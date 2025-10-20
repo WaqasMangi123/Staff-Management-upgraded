@@ -17,11 +17,13 @@ const EMAIL_FROM = process.env.EMAIL_FROM || `"Staff Management" <${EMAIL_USER}>
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || EMAIL_USER;
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
+const NODE_ENV = process.env.NODE_ENV || "development";
 
 console.log("Email Configuration:");
 console.log("EMAIL_USER:", EMAIL_USER ? "Set" : "Not set");
 console.log("ADMIN_EMAIL:", ADMIN_EMAIL);
 console.log("EMAIL_FROM:", EMAIL_FROM);
+console.log("Environment:", NODE_ENV);
 
 // AUTHENTICATION MIDDLEWARE
 const authenticateToken = (req, res, next) => {
@@ -47,62 +49,64 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// BREVO SMTP Setup with Multiple Port Fallback
+// BREVO SMTP Setup - Render Production Ready
 let smtpTransporter = null;
 
-const createBrevoTransporter = () => {
-  // Try multiple ports - Render blocks some but not all
-  const portConfigs = [
-    { port: 2587, name: "2587 (Alternative)" },
-    { port: 2525, name: "2525 (Submission)" },
-    { port: 587, name: "587 (Standard)" }
-  ];
+try {
+  console.log('Setting up SMTP transporter for', NODE_ENV, 'environment...');
+  
+  // Use port 2525 for production (Render-compatible), 587 for development
+  const smtpPort = NODE_ENV === 'production' ? 2525 : 587;
+  console.log('Using SMTP port:', smtpPort);
+  
+  smtpTransporter = nodemailer.createTransport({
+    host: 'smtp-relay.brevo.com',
+    port: smtpPort,
+    secure: false, // false for both 587 and 2525
+    auth: {
+      user: '999adf001@smtp-brevo.com',
+      pass: 'Ck78h6BWgbMc32Kj'
+    },
+    tls: {
+      rejectUnauthorized: false
+    },
+    connectionTimeout: NODE_ENV === 'production' ? 60000 : 30000, // Longer timeout for production
+    greetingTimeout: NODE_ENV === 'production' ? 30000 : 15000,
+    socketTimeout: NODE_ENV === 'production' ? 60000 : 30000,
+    pool: NODE_ENV === 'production', // Use connection pooling in production
+    maxConnections: NODE_ENV === 'production' ? 5 : 1,
+    maxMessages: NODE_ENV === 'production' ? 10 : 1
+  });
 
-  for (const config of portConfigs) {
-    try {
-      const transporter = nodemailer.createTransporter({
-        host: 'smtp-relay.brevo.com',
-        port: config.port,
-        secure: false,
-        auth: {
-          user: '999adf001@smtp-brevo.com',
-          pass: 'Ck78h6BWgbMc32Kj'
-        },
-        tls: {
-          rejectUnauthorized: false
-        },
-        connectionTimeout: 60000,
-        greetingTimeout: 30000,
-        socketTimeout: 60000,
-        pool: true,
-        maxConnections: 5,
-        maxMessages: 10
-      });
-
-      // Test connection synchronously if possible
-      console.log(`Attempting SMTP connection on port ${config.port}...`);
-      smtpTransporter = transporter;
-      
-      // Verify connection in background
-      transporter.verify((error, success) => {
-        if (success) {
-          console.log(`SMTP connected successfully on port ${config.port}`);
+  console.log('SMTP transporter created successfully');
+  
+  // Test connection (non-blocking for production)
+  if (NODE_ENV === 'development') {
+    smtpTransporter.verify((error, success) => {
+      if (error) {
+        console.log('SMTP connection test failed:', error.message);
+      } else {
+        console.log('SMTP server is ready');
+      }
+    });
+  } else {
+    // In production, test in background
+    setTimeout(() => {
+      smtpTransporter.verify((error, success) => {
+        if (error) {
+          console.log('Production SMTP connection test failed:', error.message);
         } else {
-          console.log(`SMTP failed on port ${config.port}:`, error.message);
+          console.log('Production SMTP server is ready');
         }
       });
-      
-      break; // Use first transporter created
-    } catch (error) {
-      console.log(`Failed to create transporter on port ${config.port}:`, error.message);
-    }
+    }, 5000);
   }
-};
+  
+} catch (error) {
+  console.error('Failed to create SMTP transporter:', error.message);
+}
 
-// Initialize SMTP
-createBrevoTransporter();
-
-// Email sending function
+// Email sending function with production optimizations
 const sendEmail = async (emailData) => {
   if (!smtpTransporter) {
     throw new Error('SMTP transporter not initialized');
@@ -113,13 +117,18 @@ const sendEmail = async (emailData) => {
       from: `"Staff Management" <${EMAIL_USER}>`,
       to: emailData.to,
       subject: emailData.subject,
-      html: emailData.html
+      html: emailData.html,
+      priority: 'normal',
+      headers: {
+        'X-Mailer': 'Staff Management System',
+        'X-Environment': NODE_ENV
+      }
     });
     
-    console.log('Email sent successfully:', result.messageId);
+    console.log(`Email sent successfully in ${NODE_ENV}:`, result.messageId);
     return { success: true, messageId: result.messageId };
   } catch (error) {
-    console.error('Email sending failed:', error.message);
+    console.error(`Email sending failed in ${NODE_ENV}:`, error.message);
     throw error;
   }
 };
@@ -227,7 +236,7 @@ const sendLeaveApplicationEmail = async (userDetails, leaveDetails) => {
         console.error("Failed to send leave application email:", err.message);
         resolve(); // Don't block leave application
       }
-    }, 100);
+    }, NODE_ENV === 'production' ? 500 : 100);
   });
 };
 
@@ -279,38 +288,43 @@ const sendLeaveStatusEmail = async (userEmail, userName, leaveDetails, isApprove
         console.error("Failed to send leave status email:", err.message);
         resolve();
       }
-    }, 100);
+    }, NODE_ENV === 'production' ? 500 : 100);
   });
 };
 
-// Test endpoint
+// Test endpoint with environment info
 router.post("/test-email", async (req, res) => {
   try {
     await sendEmail({
       to: ADMIN_EMAIL,
-      subject: "Test Email - Staff Management System",
+      subject: `Test Email - Staff Management System (${NODE_ENV})`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
           <h2 style="color: #28a745;">Email Test Successful!</h2>
-          <p>This test confirms your email system is working.</p>
+          <p>This test confirms your email system is working in <strong>${NODE_ENV}</strong> environment.</p>
           <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
           <p><strong>From:</strong> ${EMAIL_USER}</p>
           <p><strong>To:</strong> ${ADMIN_EMAIL}</p>
           <p><strong>Server:</strong> smtp-relay.brevo.com</p>
+          <p><strong>Port:</strong> ${NODE_ENV === 'production' ? '2525' : '587'}</p>
+          <p><strong>Environment:</strong> ${NODE_ENV}</p>
         </div>
       `
     });
     
     res.json({ 
       success: true, 
-      message: "Test email sent successfully",
+      message: `Test email sent successfully in ${NODE_ENV} environment`,
+      environment: NODE_ENV,
+      port: NODE_ENV === 'production' ? 2525 : 587,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error("Test email failed:", error);
     res.status(500).json({ 
       success: false, 
-      error: error.message
+      error: error.message,
+      environment: NODE_ENV
     });
   }
 });
@@ -523,7 +537,7 @@ router.post("/register", validateRegisterInput, async (req, res) => {
         message: "Account created successfully! Email service is temporarily unavailable. Your verification code is: " + verificationCode,
         userId: newUser._id,
         emailSent: false,
-        verificationCode: process.env.NODE_ENV === 'development' ? verificationCode : undefined
+        verificationCode: NODE_ENV === 'development' ? verificationCode : undefined
       });
     }
 
@@ -532,7 +546,7 @@ router.post("/register", validateRegisterInput, async (req, res) => {
     res.status(500).json({ 
       success: false,
       message: "Server error during registration. Please try again.",
-      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+      error: NODE_ENV === 'development' ? err.message : undefined
     });
   }
 });
@@ -544,13 +558,15 @@ router.post("/verify", async (req, res) => {
     const trimmedEmail = email.trim().toLowerCase();
     const trimmedCode = verificationCode ? verificationCode.toString().trim() : '';
 
-    console.log('Verification attempt:', {
-      email: trimmedEmail,
-      receivedCode: verificationCode,
-      trimmedCode: trimmedCode,
-      codeLength: trimmedCode.length,
-      codeType: typeof verificationCode
-    });
+    if (NODE_ENV === 'development') {
+      console.log('Verification attempt:', {
+        email: trimmedEmail,
+        receivedCode: verificationCode,
+        trimmedCode: trimmedCode,
+        codeLength: trimmedCode.length,
+        codeType: typeof verificationCode
+      });
+    }
 
     if (!trimmedEmail || !trimmedCode) {
       return res.status(400).json({ 
@@ -573,14 +589,16 @@ router.post("/verify", async (req, res) => {
     });
 
     if (!user) {
-      const userExists = await User.findOne({ email: trimmedEmail });
-      if (userExists) {
-        console.log('User exists but code mismatch:', {
-          storedCode: userExists.verificationCode,
-          receivedCode: trimmedCode,
-          codeExpires: userExists.verificationCodeExpires,
-          isExpired: userExists.verificationCodeExpires < Date.now()
-        });
+      if (NODE_ENV === 'development') {
+        const userExists = await User.findOne({ email: trimmedEmail });
+        if (userExists) {
+          console.log('User exists but code mismatch:', {
+            storedCode: userExists.verificationCode,
+            receivedCode: trimmedCode,
+            codeExpires: userExists.verificationCodeExpires,
+            isExpired: userExists.verificationCodeExpires < Date.now()
+          });
+        }
       }
       
       return res.status(400).json({ 
@@ -1184,7 +1202,6 @@ router.post("/attendance/check-out", authenticateToken, async (req, res) => {
 // APPLY FOR LEAVE
 router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
   try {
-    console.log('Processing leave application...');
     const userId = req.user.id;
     const { reason, date, leaveType } = req.body;
     
@@ -1586,6 +1603,46 @@ router.get("/attendance/admin/today-summary", authenticateToken, async (req, res
   } catch (error) {
     console.error("Get today summary error:", error);
     res.status(500).json({ success: false, message: "Failed to get today's attendance summary" });
+  }
+});
+
+// Debug routes for testing (production-aware)
+router.get("/debug-config", (req, res) => {
+  res.json({
+    EMAIL_USER: process.env.EMAIL_USER || 'NOT SET',
+    NODE_ENV: NODE_ENV,
+    hasTransporter: !!smtpTransporter,
+    smtpPort: NODE_ENV === 'production' ? 2525 : 587,
+    environment: NODE_ENV
+  });
+});
+
+// Manual SMTP test route (production-aware)
+router.get("/test-smtp-manual", async (req, res) => {
+  try {
+    if (!smtpTransporter) {
+      return res.json({ error: "Transporter not initialized" });
+    }
+    
+    const result = await smtpTransporter.sendMail({
+      from: EMAIL_USER,
+      to: ADMIN_EMAIL,
+      subject: `Manual SMTP Test (${NODE_ENV})`,
+      text: `This is a manual SMTP test from ${NODE_ENV} environment using port ${NODE_ENV === 'production' ? 2525 : 587}`
+    });
+    
+    res.json({ 
+      success: true, 
+      messageId: result.messageId,
+      environment: NODE_ENV,
+      port: NODE_ENV === 'production' ? 2525 : 587
+    });
+  } catch (error) {
+    res.json({ 
+      error: error.message,
+      environment: NODE_ENV,
+      port: NODE_ENV === 'production' ? 2525 : 587
+    });
   }
 });
 
