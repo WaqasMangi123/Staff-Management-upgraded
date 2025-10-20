@@ -17,11 +17,9 @@ const EMAIL_FROM = process.env.EMAIL_FROM || `"Staff Management" <${EMAIL_USER}>
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || EMAIL_USER;
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
-const BREVO_API_KEY = process.env.BREVO_API_KEY;
 
 console.log("Email Configuration:");
 console.log("EMAIL_USER:", EMAIL_USER ? "Set" : "Not set");
-console.log("BREVO_API_KEY:", BREVO_API_KEY ? "Set (length: " + BREVO_API_KEY.length + ")" : "Not set");
 console.log("ADMIN_EMAIL:", ADMIN_EMAIL);
 console.log("EMAIL_FROM:", EMAIL_FROM);
 
@@ -49,84 +47,81 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// BREVO SMTP Setup (Port 2525 for Render compatibility)
+// BREVO SMTP Setup with Multiple Port Fallback
 let smtpTransporter = null;
-try {
-  smtpTransporter = nodemailer.createTransporter({
-    host: 'smtp-relay.brevo.com',
-    port: 2525, // Port 2525 works on Render free tier
-    secure: false,
-    auth: { 
-      user: '999adf001@smtp-brevo.com',
-      pass: 'Ck78h6BWgbMc32Kj'
-    },
-    tls: {
-      rejectUnauthorized: false
-    },
-    connectionTimeout: 30000,
-    greetingTimeout: 15000,
-    socketTimeout: 30000
-  });
 
-  smtpTransporter.verify((error, success) => {
-    if (error) {
-      console.error('SMTP connection failed:', error.message);
-    } else {
-      console.log('SMTP server ready (Port 2525)');
-    }
-  });
-} catch (error) {
-  console.error('SMTP setup failed:', error.message);
-}
+const createBrevoTransporter = () => {
+  // Try multiple ports - Render blocks some but not all
+  const portConfigs = [
+    { port: 2587, name: "2587 (Alternative)" },
+    { port: 2525, name: "2525 (Submission)" },
+    { port: 587, name: "587 (Standard)" }
+  ];
 
-// BREVO API Setup (Fallback)
-let brevoAPI = null;
-try {
-  const { TransactionalEmailsApi, SendSmtpEmail } = require('@getbrevo/brevo');
-  brevoAPI = new TransactionalEmailsApi();
-  brevoAPI.authentications.apiKey.apiKey = BREVO_API_KEY;
-  console.log('Brevo API initialized successfully');
-} catch (error) {
-  console.log('Brevo API not available:', error.message);
-}
-
-// DUAL EMAIL SENDING SYSTEM
-const sendEmailWithFallback = async (emailData) => {
-  // Try SMTP first
-  if (smtpTransporter) {
+  for (const config of portConfigs) {
     try {
-      const result = await smtpTransporter.sendMail({
-        from: `"Staff Management" <${EMAIL_USER}>`,
-        to: emailData.to,
-        subject: emailData.subject,
-        html: emailData.html
+      const transporter = nodemailer.createTransporter({
+        host: 'smtp-relay.brevo.com',
+        port: config.port,
+        secure: false,
+        auth: {
+          user: '999adf001@smtp-brevo.com',
+          pass: 'Ck78h6BWgbMc32Kj'
+        },
+        tls: {
+          rejectUnauthorized: false
+        },
+        connectionTimeout: 60000,
+        greetingTimeout: 30000,
+        socketTimeout: 60000,
+        pool: true,
+        maxConnections: 5,
+        maxMessages: 10
       });
-      console.log('Email sent via SMTP:', result.messageId);
-      return { success: true, method: 'SMTP', messageId: result.messageId };
+
+      // Test connection synchronously if possible
+      console.log(`Attempting SMTP connection on port ${config.port}...`);
+      smtpTransporter = transporter;
+      
+      // Verify connection in background
+      transporter.verify((error, success) => {
+        if (success) {
+          console.log(`SMTP connected successfully on port ${config.port}`);
+        } else {
+          console.log(`SMTP failed on port ${config.port}:`, error.message);
+        }
+      });
+      
+      break; // Use first transporter created
     } catch (error) {
-      console.log('SMTP failed, trying API fallback:', error.message);
+      console.log(`Failed to create transporter on port ${config.port}:`, error.message);
     }
   }
+};
 
-  // Fallback to API
-  if (brevoAPI) {
-    try {
-      const { SendSmtpEmail } = require('@getbrevo/brevo');
-      const apiEmailData = new SendSmtpEmail();
-      apiEmailData.subject = emailData.subject;
-      apiEmailData.sender = { name: "Staff Management", email: EMAIL_USER };
-      apiEmailData.to = [{ email: emailData.to }];
-      apiEmailData.htmlContent = emailData.html;
+// Initialize SMTP
+createBrevoTransporter();
 
-      const result = await brevoAPI.sendTransacEmail(apiEmailData);
-      console.log('Email sent via API:', result.body.messageId);
-      return { success: true, method: 'API', messageId: result.body.messageId };
-    } catch (error) {
-      console.error('API also failed:', error.message);
-    }
+// Email sending function
+const sendEmail = async (emailData) => {
+  if (!smtpTransporter) {
+    throw new Error('SMTP transporter not initialized');
   }
 
-  throw new Error('Both SMTP and API failed');
+  try {
+    const result = await smtpTransporter.sendMail({
+      from: `"Staff Management" <${EMAIL_USER}>`,
+      to: emailData.to,
+      subject: emailData.subject,
+      html: emailData.html
+    });
+    
+    console.log('Email sent successfully:', result.messageId);
+    return { success: true, messageId: result.messageId };
+  } catch (error) {
+    console.error('Email sending failed:', error.message);
+    throw error;
+  }
 };
 
 // Helper Functions
@@ -134,34 +129,43 @@ const generateVerificationCode = () => Math.floor(100000 + Math.random() * 90000
 
 const sendVerificationEmail = async (email, verificationCode) => {
   try {
-    const result = await sendEmailWithFallback({
+    await sendEmail({
       to: email,
-      subject: "Verify Your Email Address",
+      subject: "Verify Your Email Address - Staff Management",
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
           <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
             <div style="text-align: center; margin-bottom: 30px;">
               <h1 style="color: #2563eb; margin: 0; font-size: 28px;">Email Verification</h1>
+              <p style="color: #666; margin: 10px 0;">Staff Management System</p>
             </div>
+            
             <div style="text-align: center; margin-bottom: 30px;">
-              <div style="background-color: #2563eb; color: white; padding: 20px; border-radius: 8px; font-size: 32px; font-weight: bold; letter-spacing: 3px;">
+              <div style="background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%); color: white; padding: 25px; border-radius: 12px; font-size: 36px; font-weight: bold; letter-spacing: 5px; box-shadow: 0 4px 15px rgba(37, 99, 235, 0.3);">
                 ${verificationCode}
               </div>
             </div>
-            <div style="text-align: center; margin-bottom: 20px;">
-              <p style="font-size: 16px; color: #495057; margin: 0;">Enter this code to verify your email address</p>
+            
+            <div style="text-align: center; margin-bottom: 25px;">
+              <p style="font-size: 18px; color: #495057; margin: 0; font-weight: 500;">Enter this 6-digit code to verify your email</p>
+              <p style="font-size: 14px; color: #6c757d; margin: 10px 0;">This code is valid for 10 minutes only</p>
             </div>
-            <div style="background-color: #fff3cd; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #ffc107;">
+            
+            <div style="background-color: #fff3cd; padding: 20px; border-radius: 8px; border-left: 4px solid #ffc107; margin-bottom: 20px;">
               <p style="margin: 0; color: #856404; font-size: 14px;">
-                This code will expire in <strong>10 minutes</strong>
+                <strong>Security Notice:</strong> If you didn't request this verification, please ignore this email.
               </p>
+            </div>
+            
+            <div style="text-align: center; color: #6c757d; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #dee2e6;">
+              <p>Staff Management System | Secure Email Verification</p>
             </div>
           </div>
         </div>
       `
     });
     
-    console.log(`Verification email sent via ${result.method} to:`, email);
+    console.log('Verification email sent to:', email);
     return true;
   } catch (err) {
     console.error("Failed to send verification email:", err.message);
@@ -181,7 +185,7 @@ const sendLeaveApplicationEmail = async (userDetails, leaveDetails) => {
         const urgencyColor = daysUntil <= 2 ? '#dc3545' : daysUntil <= 7 ? '#ffc107' : '#28a745';
         const urgencyText = daysUntil <= 2 ? 'URGENT' : daysUntil <= 7 ? 'SOON' : 'ADVANCE';
 
-        const result = await sendEmailWithFallback({
+        await sendEmail({
           to: ADMIN_EMAIL,
           subject: `Leave Application - ${userDetails.name || userDetails.username} (${urgencyText})`,
           html: `
@@ -217,7 +221,7 @@ const sendLeaveApplicationEmail = async (userDetails, leaveDetails) => {
           `
         });
 
-        console.log(`Leave application email sent via ${result.method} for ${userDetails.username}`);
+        console.log(`Leave application email sent for ${userDetails.username}`);
         resolve();
       } catch (err) {
         console.error("Failed to send leave application email:", err.message);
@@ -239,7 +243,7 @@ const sendLeaveStatusEmail = async (userEmail, userName, leaveDetails, isApprove
         const statusText = isApproved ? 'APPROVED' : 'REJECTED';
         const statusIcon = isApproved ? '✅' : '❌';
 
-        const result = await sendEmailWithFallback({
+        await sendEmail({
           to: userEmail,
           subject: `${statusIcon} Leave Request ${statusText} - ${leaveDate}`,
           html: `
@@ -269,7 +273,7 @@ const sendLeaveStatusEmail = async (userEmail, userName, leaveDetails, isApprove
           `
         });
 
-        console.log(`Leave status email sent via ${result.method} to ${userEmail}`);
+        console.log(`Leave status email sent to ${userEmail}`);
         resolve();
       } catch (err) {
         console.error("Failed to send leave status email:", err.message);
@@ -279,29 +283,28 @@ const sendLeaveStatusEmail = async (userEmail, userName, leaveDetails, isApprove
   });
 };
 
-// Test endpoints
+// Test endpoint
 router.post("/test-email", async (req, res) => {
   try {
-    const result = await sendEmailWithFallback({
+    await sendEmail({
       to: ADMIN_EMAIL,
       subject: "Test Email - Staff Management System",
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
           <h2 style="color: #28a745;">Email Test Successful!</h2>
           <p>This test confirms your email system is working.</p>
-          <p><strong>Method:</strong> ${result ? result.method : 'Unknown'}</p>
           <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
           <p><strong>From:</strong> ${EMAIL_USER}</p>
           <p><strong>To:</strong> ${ADMIN_EMAIL}</p>
+          <p><strong>Server:</strong> smtp-relay.brevo.com</p>
         </div>
       `
     });
     
     res.json({ 
       success: true, 
-      message: `Test email sent successfully via ${result.method}`,
-      method: result.method,
-      messageId: result.messageId
+      message: "Test email sent successfully",
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error("Test email failed:", error);
@@ -474,7 +477,7 @@ const validateLoginInput = (req, res, next) => {
   next();
 };
 
-// User Registration
+// USER REGISTRATION
 router.post("/register", validateRegisterInput, async (req, res) => {
   try {
     const { username, email, password } = req.body;
@@ -534,7 +537,7 @@ router.post("/register", validateRegisterInput, async (req, res) => {
   }
 });
 
-// Email Verification
+// EMAIL VERIFICATION
 router.post("/verify", async (req, res) => {
   try {
     const { email, verificationCode } = req.body;
@@ -609,7 +612,7 @@ router.post("/verify", async (req, res) => {
   }
 });
 
-// User Login
+// USER LOGIN
 router.post("/login", validateLoginInput, async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -663,7 +666,7 @@ router.post("/login", validateLoginInput, async (req, res) => {
   }
 });
 
-// Resend Verification
+// RESEND VERIFICATION
 router.post("/resend-verification", async (req, res) => {
   try {
     const { email } = req.body;
@@ -697,7 +700,7 @@ router.post("/resend-verification", async (req, res) => {
   }
 });
 
-// Forgot Password
+// FORGOT PASSWORD
 router.post("/forgot-password", async (req, res) => {
   try {
     const { email } = req.body;
@@ -717,9 +720,9 @@ router.post("/forgot-password", async (req, res) => {
     user.resetPasswordExpires = Date.now() + 3600000;
     await user.save();
 
-    const resetUrl = `https://parksy.uk/#/reset-password/${resetToken}`;
+    const resetUrl = `${FRONTEND_URL}/#/reset-password/${resetToken}`;
     
-    await sendEmailWithFallback({
+    await sendEmail({
       to: user.email,
       subject: "Password Reset Request",
       html: `
@@ -732,6 +735,7 @@ router.post("/forgot-password", async (req, res) => {
             </a>
           </div>
           <p style="color: #dc3545;">This link expires in 1 hour.</p>
+          <p style="color: #666; font-size: 12px;">If you can't click the button, copy this link: ${resetUrl}</p>
         </div>
       `
     });
@@ -744,7 +748,7 @@ router.post("/forgot-password", async (req, res) => {
   }
 });
 
-// Validate Reset Token
+// VALIDATE RESET TOKEN
 router.post("/validate-reset-token", async (req, res) => {
   try {
     const { token } = req.body;
@@ -777,7 +781,7 @@ router.post("/validate-reset-token", async (req, res) => {
   }
 });
 
-// Reset Password
+// RESET PASSWORD
 router.post("/reset-password", async (req, res) => {
   try {
     const { token, newPassword } = req.body;
@@ -811,7 +815,7 @@ router.post("/reset-password", async (req, res) => {
     user.resetPasswordExpires = undefined;
     await user.save();
 
-    await sendEmailWithFallback({
+    await sendEmail({
       to: user.email,
       subject: "Password Changed Successfully",
       html: `
@@ -831,7 +835,7 @@ router.post("/reset-password", async (req, res) => {
   }
 });
 
-// Get All Users
+// GET ALL USERS
 router.get("/users", async (req, res) => {
   try {
     const users = await User.find({}, 'username email role createdAt lastActive verified').sort({ createdAt: -1 });
@@ -854,7 +858,7 @@ router.get("/users", async (req, res) => {
   }
 });
 
-// Get Active Users
+// GET ACTIVE USERS
 router.get("/active-users", async (req, res) => {
   try {
     const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
@@ -871,7 +875,7 @@ router.get("/active-users", async (req, res) => {
   }
 });
 
-// Delete User
+// DELETE USER
 router.delete("/users/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -895,7 +899,7 @@ router.delete("/users/:id", async (req, res) => {
   }
 });
 
-// Get User Profile
+// GET USER PROFILE
 router.get("/profile/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -909,7 +913,7 @@ router.get("/profile/:userId", async (req, res) => {
   }
 });
 
-// Update/Create User Profile
+// UPDATE/CREATE USER PROFILE
 router.post("/update-profile", async (req, res) => {
   try {
     const { userId, name, phone, profilePicture, department, jobTitle, shift, workingHours, skills, yearsWorked, specialTraining, shiftFlexibility, emergencyContact, notes } = req.body;
@@ -994,9 +998,40 @@ router.post("/update-profile", async (req, res) => {
   }
 });
 
+// GET USER PROFILE (with auth)
+router.get("/profile", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId).select('-password');
+    const profile = await UserProfile.findOne({ userId });
+    
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    res.status(200).json({
+      success: true,
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        verified: user.verified,
+        createdAt: user.createdAt,
+        lastActive: user.lastActive
+      },
+      profile: profile || null
+    });
+
+  } catch (error) {
+    console.error("Get authenticated user profile error:", error);
+    res.status(500).json({ success: false, message: "Failed to fetch user profile" });
+  }
+});
+
 // ATTENDANCE ROUTES
 
-// Smart Check-in
+// SMART CHECK-IN
 router.post("/attendance/check-in", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1091,7 +1126,7 @@ router.post("/attendance/check-in", authenticateToken, async (req, res) => {
   }
 });
 
-// Check-out
+// CHECK-OUT
 router.post("/attendance/check-out", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1146,7 +1181,7 @@ router.post("/attendance/check-out", authenticateToken, async (req, res) => {
   }
 });
 
-// Apply for Leave
+// APPLY FOR LEAVE
 router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
   try {
     console.log('Processing leave application...');
@@ -1229,7 +1264,7 @@ router.post("/attendance/apply-leave", authenticateToken, async (req, res) => {
   }
 });
 
-// Get Today's Attendance
+// GET TODAY'S ATTENDANCE
 router.get("/attendance/today", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1309,7 +1344,7 @@ router.get("/attendance/today", authenticateToken, async (req, res) => {
   }
 });
 
-// Get Attendance History
+// GET ATTENDANCE HISTORY
 router.get("/attendance/history", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1343,7 +1378,7 @@ router.get("/attendance/history", authenticateToken, async (req, res) => {
   }
 });
 
-// Admin: Approve/Reject Leave
+// ADMIN: APPROVE/REJECT LEAVE
 router.post("/attendance/admin/approve-leave", async (req, res) => {
   try {
     const authHeader = req.headers['authorization'];
@@ -1442,7 +1477,7 @@ router.post("/attendance/admin/approve-leave", async (req, res) => {
   }
 });
 
-// Get Pending Leaves
+// GET PENDING LEAVES
 router.get("/attendance/admin/pending-leaves", async (req, res) => {
   try {
     const authHeader = req.headers['authorization'];
@@ -1508,7 +1543,7 @@ router.get("/attendance/admin/pending-leaves", async (req, res) => {
   }
 });
 
-// Admin: Today's Summary
+// ADMIN: TODAY'S SUMMARY
 router.get("/attendance/admin/today-summary", authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
