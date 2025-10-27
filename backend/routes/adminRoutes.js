@@ -273,50 +273,59 @@ router.patch("/status/:id", adminAuth, async (req, res) => {
 });
 
 // ===========================================
-// STAFF MANAGEMENT ROUTES
+// STAFF MANAGEMENT ROUTES - FIXED VERSION
 // ===========================================
 
-// Get All Staff with their profiles
+// Get All Staff with their profiles (UPDATED)
 router.get("/all-staff", adminAuth, async (req, res) => {
   try {
-    // Get all users with their profiles
-    const users = await User.find({ role: 'user' }, 'username email createdAt').lean();
+    // Get all users with role 'user'
+    const users = await User.find({ role: 'user' }, 'username email createdAt verified').lean();
     
-    // Get all profiles and match with users
+    // Get all profiles and create a map
     const profiles = await UserProfile.find({}).lean();
+    const profileMap = new Map();
+    profiles.forEach(profile => {
+      profileMap.set(profile.userId.toString(), profile);
+    });
     
     // Combine user data with profile data
     const staffWithProfiles = users.map(user => {
-      const profile = profiles.find(p => p.userId.toString() === user._id.toString());
+      const profile = profileMap.get(user._id.toString());
       return {
-        _id: profile ? profile._id : user._id,
+        _id: user._id, // IMPORTANT: Use userId for operations
         userId: user._id,
+        profileId: profile?._id, // Store profile ID separately
         name: profile ? profile.name : user.username,
         email: user.email,
         username: user.username,
+        verified: user.verified,
+        hasProfile: !!profile,
         createdAt: user.createdAt,
         // Profile data (if exists)
         phone: profile?.phone || 'N/A',
         department: profile?.department || 'Not Set',
         jobTitle: profile?.jobTitle || 'Not Set', 
         shift: profile?.shift || 'Not Set',
-        workingHours: profile?.workingHours || { start: 'N/A', end: 'N/A' },
+        workingHours: profile?.workingHours || { start: '09:00', end: '17:00' },
         skills: profile?.skills || [],
         yearsWorked: profile?.yearsWorked || 0,
         specialTraining: profile?.specialTraining || [],
         shiftFlexibility: profile?.shiftFlexibility || false,
-        emergencyContact: profile?.emergencyContact || { name: 'N/A', relationship: 'N/A', phone: 'N/A' },
+        emergencyContact: profile?.emergencyContact || { name: 'Not Set', relationship: 'Not Set', phone: 'Not Set' },
         notes: profile?.notes || '',
         profileComplete: profile?.profileComplete || false,
         profilePicture: profile?.profilePicture,
-        lastUpdated: profile?.lastUpdated
+        lastUpdated: profile?.lastUpdated || user.updatedAt
       };
     });
 
     res.status(200).json({
       success: true,
       staff: staffWithProfiles,
-      total: staffWithProfiles.length
+      total: staffWithProfiles.length,
+      withProfiles: staffWithProfiles.filter(s => s.hasProfile).length,
+      withoutProfiles: staffWithProfiles.filter(s => !s.hasProfile).length
     });
 
   } catch (error) {
@@ -328,24 +337,53 @@ router.get("/all-staff", adminAuth, async (req, res) => {
   }
 });
 
-// Get Single Staff Member with full details
+// Get Single Staff Member with full details (UPDATED)
 router.get("/staff/:id", adminAuth, async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Find profile by ID
-    const profile = await UserProfile.findById(id).populate('userId', 'username email createdAt');
-    
-    if (!profile) {
+    // Try to find user by userId first
+    const user = await User.findById(id).select('-password');
+    if (!user) {
       return res.status(404).json({
         success: false,
         message: "Staff member not found"
       });
     }
 
+    const profile = await UserProfile.findOne({ userId: id });
+
+    const staffData = {
+      _id: user._id,
+      userId: user._id,
+      profileId: profile?._id,
+      username: user.username,
+      email: user.email,
+      verified: user.verified,
+      hasProfile: !!profile,
+      createdAt: user.createdAt,
+      
+      // Profile data
+      name: profile?.name || user.username,
+      phone: profile?.phone || 'N/A',
+      department: profile?.department || 'Not Set',
+      jobTitle: profile?.jobTitle || 'Not Set',
+      shift: profile?.shift || 'Not Set',
+      workingHours: profile?.workingHours || { start: '09:00', end: '17:00' },
+      skills: profile?.skills || [],
+      yearsWorked: profile?.yearsWorked || 0,
+      specialTraining: profile?.specialTraining || [],
+      shiftFlexibility: profile?.shiftFlexibility || false,
+      emergencyContact: profile?.emergencyContact,
+      notes: profile?.notes || '',
+      profileComplete: profile?.profileComplete || false,
+      profilePicture: profile?.profilePicture,
+      lastUpdated: profile?.lastUpdated
+    };
+
     res.status(200).json({
       success: true,
-      staff: profile
+      staff: staffData
     });
 
   } catch (error) {
@@ -357,42 +395,90 @@ router.get("/staff/:id", adminAuth, async (req, res) => {
   }
 });
 
-// Update Staff Member
+// Update Staff Member (UPDATED - Creates profile if doesn't exist)
 router.put("/staff/:id", adminAuth, async (req, res) => {
   try {
-    const { id } = req.params;
+    const { id } = req.params; // This is the userId
     const updateData = req.body;
 
-    // Remove fields that shouldn't be updated directly
-    delete updateData._id;
-    delete updateData.userId;
-    delete updateData.createdAt;
-    delete updateData.updatedAt;
-
-    // Update the profile
-    const updatedProfile = await UserProfile.findByIdAndUpdate(
-      id,
-      {
-        ...updateData,
-        lastUpdated: new Date()
-      },
-      { 
-        new: true,
-        runValidators: true
-      }
-    );
-
-    if (!updatedProfile) {
+    // Verify user exists
+    const user = await User.findById(id);
+    if (!user) {
       return res.status(404).json({
         success: false,
-        message: "Staff member not found"
+        message: "User not found"
       });
+    }
+
+    // Prevent updating admin users
+    if (user.role === 'admin' || user.role === 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        message: "Cannot modify admin accounts through this endpoint"
+      });
+    }
+
+    // Find or create profile
+    let profile = await UserProfile.findOne({ userId: id });
+
+    if (profile) {
+      // Update existing profile
+      Object.assign(profile, {
+        name: updateData.name?.trim() || profile.name,
+        phone: updateData.phone?.trim() || profile.phone,
+        department: updateData.department || profile.department,
+        jobTitle: updateData.jobTitle || profile.jobTitle,
+        shift: updateData.shift || profile.shift,
+        workingHours: updateData.workingHours || profile.workingHours,
+        skills: updateData.skills !== undefined ? updateData.skills : profile.skills,
+        yearsWorked: updateData.yearsWorked !== undefined ? parseInt(updateData.yearsWorked) : profile.yearsWorked,
+        specialTraining: updateData.specialTraining !== undefined ? updateData.specialTraining : profile.specialTraining,
+        shiftFlexibility: updateData.shiftFlexibility !== undefined ? updateData.shiftFlexibility : profile.shiftFlexibility,
+        emergencyContact: updateData.emergencyContact || profile.emergencyContact,
+        notes: updateData.notes !== undefined ? updateData.notes : profile.notes,
+        profilePicture: updateData.profilePicture !== undefined ? updateData.profilePicture : profile.profilePicture,
+        profileComplete: true,
+        lastUpdated: new Date()
+      });
+
+      await profile.save();
+    } else {
+      // Create new profile with defaults
+      profile = new UserProfile({
+        userId: id,
+        name: updateData.name?.trim() || user.username,
+        phone: updateData.phone?.trim() || '0000000000',
+        department: updateData.department || 'Office Helpers',
+        jobTitle: updateData.jobTitle || 'General Helper',
+        shift: updateData.shift || 'Morning',
+        workingHours: updateData.workingHours || { start: '09:00', end: '17:00' },
+        skills: updateData.skills || [],
+        yearsWorked: parseInt(updateData.yearsWorked) || 0,
+        specialTraining: updateData.specialTraining || [],
+        shiftFlexibility: updateData.shiftFlexibility || false,
+        emergencyContact: updateData.emergencyContact || {
+          name: 'Not Set',
+          relationship: 'Not Set',
+          phone: '0000000000'
+        },
+        notes: updateData.notes || '',
+        profilePicture: updateData.profilePicture || null,
+        profileComplete: true
+      });
+
+      await profile.save();
     }
 
     res.status(200).json({
       success: true,
-      message: "Staff member updated successfully",
-      staff: updatedProfile
+      message: "Staff information updated successfully",
+      staff: {
+        userId: user._id,
+        profileId: profile._id,
+        name: profile.name,
+        department: profile.department,
+        jobTitle: profile.jobTitle
+      }
     });
 
   } catch (error) {
@@ -408,40 +494,48 @@ router.put("/staff/:id", adminAuth, async (req, res) => {
     
     res.status(500).json({
       success: false,
-      message: "Failed to update staff member"
+      message: "Failed to update staff information"
     });
   }
 });
 
-// Delete Staff Member
+// Delete Staff Member (UPDATED - Deletes both User and Profile)
 router.delete("/staff/:id", adminAuth, async (req, res) => {
   try {
-    const { id } = req.params;
-    
-    // Find the profile first to get user details
-    const profile = await UserProfile.findById(id);
-    
-    if (!profile) {
+    const { id } = req.params; // This is the userId
+
+    // Find user
+    const user = await User.findById(id);
+    if (!user) {
       return res.status(404).json({
         success: false,
-        message: "Staff member not found"
+        message: "User not found"
       });
     }
 
-    // Delete the profile
-    await UserProfile.findByIdAndDelete(id);
-    
-    // Optionally, also delete the user account
-    // Uncomment the next line if you want to delete the user account as well
-    // await User.findByIdAndDelete(profile.userId);
-    
+    // Prevent deleting admin users
+    if (user.role === 'admin' || user.role === 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        message: "Cannot delete admin accounts"
+      });
+    }
+
+    // Delete profile if exists
+    const profile = await UserProfile.findOneAndDelete({ userId: id });
+
+    // Delete user
+    await User.findByIdAndDelete(id);
+
     res.status(200).json({
       success: true,
       message: "Staff member deleted successfully",
       deletedStaff: {
-        id: profile._id,
-        name: profile.name,
-        department: profile.department
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        name: profile?.name || user.username,
+        department: profile?.department || 'Not Set'
       }
     });
 
@@ -454,10 +548,11 @@ router.delete("/staff/:id", adminAuth, async (req, res) => {
   }
 });
 
-// Get Staff Statistics
+// Get Staff Statistics (UPDATED)
 router.get("/staff-stats", adminAuth, async (req, res) => {
   try {
-    const totalStaff = await UserProfile.countDocuments();
+    const totalUsers = await User.countDocuments({ role: 'user' });
+    const totalProfiles = await UserProfile.countDocuments();
     
     // Get staff by department
     const departmentStats = await UserProfile.aggregate([
@@ -481,15 +576,18 @@ router.get("/staff-stats", adminAuth, async (req, res) => {
 
     // Get recent staff additions (last 30 days)
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const recentStaff = await UserProfile.countDocuments({
+    const recentUsers = await User.countDocuments({
+      role: 'user',
       createdAt: { $gte: thirtyDaysAgo }
     });
 
     res.status(200).json({
       success: true,
       stats: {
-        totalStaff,
-        recentStaff,
+        totalUsers,
+        totalProfiles,
+        usersWithoutProfiles: totalUsers - totalProfiles,
+        recentUsers,
         departmentStats,
         shiftStats
       }
@@ -504,36 +602,52 @@ router.get("/staff-stats", adminAuth, async (req, res) => {
   }
 });
 
-// Search Staff
+// Search Staff (UPDATED)
 router.get("/search-staff", adminAuth, async (req, res) => {
   try {
     const { query, department, shift } = req.query;
     
-    let searchFilter = {};
+    let profileFilter = {};
     
     if (query) {
-      searchFilter.$or = [
+      profileFilter.$or = [
         { name: { $regex: query, $options: 'i' } },
         { jobTitle: { $regex: query, $options: 'i' } }
       ];
     }
     
     if (department) {
-      searchFilter.department = department;
+      profileFilter.department = department;
     }
     
     if (shift) {
-      searchFilter.shift = shift;
+      profileFilter.shift = shift;
     }
 
-    const staff = await UserProfile.find(searchFilter)
+    const profiles = await UserProfile.find(profileFilter)
       .populate('userId', 'email username')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const staffList = profiles.map(profile => ({
+      _id: profile.userId._id,
+      userId: profile.userId._id,
+      profileId: profile._id,
+      username: profile.userId.username,
+      email: profile.userId.email,
+      name: profile.name,
+      phone: profile.phone,
+      department: profile.department,
+      jobTitle: profile.jobTitle,
+      shift: profile.shift,
+      workingHours: profile.workingHours,
+      profileComplete: profile.profileComplete
+    }));
 
     res.status(200).json({
       success: true,
-      staff,
-      total: staff.length
+      staff: staffList,
+      total: staffList.length
     });
 
   } catch (error) {

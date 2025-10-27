@@ -59,7 +59,7 @@ try {
   const smtpPort = NODE_ENV === 'production' ? 2525 : 587;
   console.log('Using SMTP port:', smtpPort);
   
-  smtpTransporter = nodemailer.createTransport({
+  smtpTransporter = nodemailer.createTransporter({
     host: 'smtp-relay.brevo.com',
     port: smtpPort,
     secure: false, // false for both 587 and 2525
@@ -221,7 +221,7 @@ const sendLeaveApplicationEmail = async (userDetails, leaveDetails) => {
                   <p><strong>Submitted:</strong> ${new Date().toLocaleString()}</p>
                 </div>
                 <div style="text-align: center;">
-                  <a href="${FRONTEND_URL}/admin/attendance" style="background-color: #28a745; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+                  <a href="${FRONTEND_URL}/admin-attendance" style="background-color: #28a745; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold;">
                     View in Admin Dashboard
                   </a>
                 </div>
@@ -1395,17 +1395,19 @@ router.get("/attendance/history", authenticateToken, async (req, res) => {
   }
 });
 
-// ADMIN: APPROVE/REJECT LEAVE
+// ADMIN ATTENDANCE ROUTES - NO AUTHENTICATION REQUIRED
+
+// ADMIN: APPROVE/REJECT LEAVE (NO AUTH)
 router.post("/attendance/admin/approve-leave", async (req, res) => {
   try {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
+    // REMOVED: Authentication check
+    // const authHeader = req.headers['authorization'];
+    // const token = authHeader && authHeader.split(' ')[1];
+    // if (!token) {
+    //   return res.status(401).json({ success: false, message: "Access token required" });
+    // }
+    // const decoded = jwt.verify(token, JWT_SECRET);
 
-    if (!token) {
-      return res.status(401).json({ success: false, message: "Access token required" });
-    }
-
-    const decoded = jwt.verify(token, JWT_SECRET);
     const { attendanceId, isApproved, approvalNotes } = req.body;
 
     if (typeof isApproved !== 'boolean') {
@@ -1425,11 +1427,12 @@ router.post("/attendance/admin/approve-leave", async (req, res) => {
       return res.status(400).json({ success: false, message: `Leave request already ${attendance.isApproved ? 'approved' : 'rejected'}` });
     }
 
-    const adminUser = await User.findById(decoded.id);
+    // MODIFIED: Use default admin since no authentication
+    const adminUser = { username: 'Admin' };
     const leaveUser = await User.findById(attendance.userId);
     
     attendance.isApproved = isApproved;
-    attendance.approvedBy = decoded.id;
+    attendance.approvedBy = null; // No specific admin ID since no auth
     attendance.approvalDate = new Date();
     attendance.approvalNotes = approvalNotes || '';
     
@@ -1494,17 +1497,16 @@ router.post("/attendance/admin/approve-leave", async (req, res) => {
   }
 });
 
-// GET PENDING LEAVES
+// GET PENDING LEAVES (NO AUTH)
 router.get("/attendance/admin/pending-leaves", async (req, res) => {
   try {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-
-    if (!token) {
-      return res.status(401).json({ success: false, message: "Access token required" });
-    }
-
-    jwt.verify(token, JWT_SECRET);
+    // REMOVED: Authentication check
+    // const authHeader = req.headers['authorization'];
+    // const token = authHeader && authHeader.split(' ')[1];
+    // if (!token) {
+    //   return res.status(401).json({ success: false, message: "Access token required" });
+    // }
+    // jwt.verify(token, JWT_SECRET);
 
     const pendingLeaves = await Attendance.find({ status: 'leave', isApproved: null }).sort({ createdAt: -1 });
 
@@ -1560,12 +1562,13 @@ router.get("/attendance/admin/pending-leaves", async (req, res) => {
   }
 });
 
-// ADMIN: TODAY'S SUMMARY
-router.get("/attendance/admin/today-summary", authenticateToken, async (req, res) => {
+// ADMIN: TODAY'S SUMMARY (NO AUTH)
+router.get("/attendance/admin/today-summary", async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ success: false, message: "Admin access required" });
-    }
+    // REMOVED: Authentication and role check
+    // if (req.user.role !== 'admin') {
+    //   return res.status(403).json({ success: false, message: "Admin access required" });
+    // }
 
     const today = new Date().toISOString().split('T')[0];
     const todayAttendance = await Attendance.find({ date: today }).populate('userId', 'username email').sort({ 'checkIn.time': 1 });
