@@ -5,14 +5,10 @@ const User = require("../models/user");
 const UserProfile = require("../models/userprofile");
 const jwt = require("jsonwebtoken");
 
-// Auto-reassignment service (inline for simplicity - you can move to separate file)
+// Auto-reassignment service
 class AutoReassignmentService {
-  /**
-   * Find available users for a specific category and date
-   */
   async findAvailableUsers(category, date, excludeUserId = null) {
     try {
-      // Get all users with profiles matching the category
       const userProfiles = await UserProfile.find({
         jobTitle: { $regex: new RegExp(category, 'i') },
         isActive: true
@@ -27,13 +23,11 @@ class AutoReassignmentService {
           continue;
         }
 
-        // Check if user is present (you can implement actual attendance check here)
         const isPresent = await this.checkUserPresence(user._id, date);
         if (!isPresent) {
           continue;
         }
 
-        // Check user's current workload for the date
         const currentTasks = await Task.countDocuments({
           assignedTo: user._id,
           date: date,
@@ -75,31 +69,15 @@ class AutoReassignmentService {
     }
   }
 
-  /**
-   * Check if a user is present (implement your attendance logic here)
-   */
   async checkUserPresence(userId, date) {
     try {
-      // PLACEHOLDER: Replace with your actual attendance system
-      // Example: Check if user has marked attendance for the day
-      // const attendance = await Attendance.findOne({
-      //   userId: userId,
-      //   date: date,
-      //   status: 'present'
-      // });
-      // return !!attendance;
-
-      // For now, assume users are present unless you have attendance data
-      return true;
+      return true; // Placeholder - implement your attendance system
     } catch (error) {
       console.error('Error checking user presence:', error);
       return false;
     }
   }
 
-  /**
-   * Auto-reassign a task when original assignee is absent
-   */
   async autoReassignTask(taskId, reason = 'user_absent') {
     try {
       const task = await Task.findById(taskId).populate('assignedTo', 'username email');
@@ -129,7 +107,6 @@ class AutoReassignmentService {
       const selectedUser = availableUsers[0];
       const originalAssignee = task.assignedTo;
 
-      // Update task with reassignment details
       task.originalAssignee = task.assignedTo;
       task.assignedTo = selectedUser.user._id;
       task.isReassigned = true;
@@ -137,7 +114,6 @@ class AutoReassignmentService {
       task.reassignedAt = new Date();
       task.status = 'reassigned';
 
-      // Add to reassignment history
       task.reassignmentHistory.push({
         fromUser: originalAssignee._id,
         toUser: selectedUser.user._id,
@@ -170,9 +146,6 @@ class AutoReassignmentService {
     }
   }
 
-  /**
-   * Check and auto-reassign tasks for absent users on a specific date
-   */
   async checkAndReassignForDate(date) {
     try {
       const pendingTasks = await Task.find({
@@ -209,9 +182,6 @@ class AutoReassignmentService {
     }
   }
 
-  /**
-   * Get reassignment statistics
-   */
   async getReassignmentStats(date = null) {
     try {
       let query = { isReassigned: true };
@@ -233,9 +203,7 @@ class AutoReassignmentService {
       reassignedTasks.forEach(task => {
         const reason = task.reassignmentReason || 'unknown';
         stats.byReason[reason] = (stats.byReason[reason] || 0) + 1;
-
         stats.byCategory[task.category] = (stats.byCategory[task.category] || 0) + 1;
-
         stats.byDate[task.date] = (stats.byDate[task.date] || 0) + 1;
       });
 
@@ -246,9 +214,6 @@ class AutoReassignmentService {
     }
   }
 
-  /**
-   * Manually reassign a task to a specific user
-   */
   async manualReassignTask(taskId, newUserId, reason = 'manual_override') {
     try {
       const task = await Task.findById(taskId).populate('assignedTo', 'username email');
@@ -300,7 +265,6 @@ class AutoReassignmentService {
   }
 }
 
-// Create service instance
 const autoReassignmentService = new AutoReassignmentService();
 
 // Authentication middleware
@@ -348,6 +312,10 @@ const adminOnly = (req, res, next) => {
   });
 };
 
+// ========================================
+// TASK MANAGEMENT ROUTES
+// ========================================
+
 // 🔹 POST /api/tasks/create - Admin creates a new task with auto-reassignment check
 router.post("/create", authenticateToken, adminOnly, async (req, res) => {
   try {
@@ -362,7 +330,6 @@ router.post("/create", authenticateToken, adminOnly, async (req, res) => {
       estimatedDuration
     } = req.body;
 
-    // Validate input
     if (!title || !assignedTo || !date || !category || !location) {
       return res.status(400).json({
         success: false,
@@ -370,7 +337,6 @@ router.post("/create", authenticateToken, adminOnly, async (req, res) => {
       });
     }
 
-    // Check if user exists
     const user = await User.findById(assignedTo);
     if (!user) {
       return res.status(404).json({
@@ -379,7 +345,6 @@ router.post("/create", authenticateToken, adminOnly, async (req, res) => {
       });
     }
 
-    // Create new task
     const newTask = new Task({
       title,
       description: description || '',
@@ -394,7 +359,6 @@ router.post("/create", authenticateToken, adminOnly, async (req, res) => {
 
     await newTask.save();
     
-    // Check if the assigned user is available on the task date
     let reassignmentResult = null;
     const isPresent = await autoReassignmentService.checkUserPresence(assignedTo, date);
     
@@ -409,8 +373,8 @@ router.post("/create", authenticateToken, adminOnly, async (req, res) => {
     }
 
     await newTask.populate([
-      { path: 'assignedTo', select: 'username email' },
-      { path: 'originalAssignee', select: 'username email' }
+      { path: 'assignedTo', select: 'username email name' },
+      { path: 'originalAssignee', select: 'username email name' }
     ]);
 
     const responseData = {
@@ -435,6 +399,712 @@ router.post("/create", authenticateToken, adminOnly, async (req, res) => {
     });
   }
 });
+
+// 🔹 GET /api/tasks/my-tasks - Get current user's tasks with verification info
+router.get("/my-tasks", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { status, date, priority, category, includeVerification } = req.query;
+
+    let query = { assignedTo: userId };
+    
+    if (status) query.status = status;
+    if (date) query.date = date;
+    if (priority) query.priority = priority;
+    if (category) query.category = category;
+
+    const tasks = await Task.find(query)
+      .populate('assignedBy', 'username email name')
+      .populate('originalAssignee', 'username email name')
+      .populate('verifierId', 'username email name')
+      .sort({ date: -1, priority: 1, createdAt: -1 });
+
+    const tasksWithVerification = tasks.map(task => {
+      const taskObj = task.toObject();
+      
+      if (includeVerification === 'true') {
+        taskObj.verificationSummary = task.getVerificationSummary();
+        taskObj.needsVerification = task.needsVerification();
+        taskObj.isVerificationComplete = task.isVerificationComplete();
+      }
+      
+      return taskObj;
+    });
+
+    res.status(200).json({
+      success: true,
+      tasks: tasksWithVerification,
+      total: tasks.length,
+      verificationStats: includeVerification === 'true' ? {
+        needsVerification: tasks.filter(t => t.needsVerification()).length,
+        verificationComplete: tasks.filter(t => t.isVerificationComplete()).length,
+        verificationPending: tasks.filter(t => t.verificationStatus === 'pending_verification').length
+      } : null
+    });
+
+  } catch (error) {
+    console.error("Get my tasks error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch your tasks"
+    });
+  }
+});
+
+// 🔹 GET /api/tasks/today - Get today's tasks for current user with verification
+router.get("/today", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const today = new Date().toISOString().split('T')[0];
+
+    const tasks = await Task.find({ 
+      assignedTo: userId, 
+      date: today 
+    })
+    .populate('assignedBy', 'username email name')
+    .populate('originalAssignee', 'username email name')
+    .populate('verifierId', 'username email name')
+    .sort({ priority: 1, createdAt: -1 });
+
+    const tasksByStatus = {
+      pending: tasks.filter(t => t.status === 'pending'),
+      'in-progress': tasks.filter(t => t.status === 'in-progress'),
+      completed: tasks.filter(t => t.status === 'completed'),
+      cancelled: tasks.filter(t => t.status === 'cancelled'),
+      reassigned: tasks.filter(t => t.status === 'reassigned')
+    };
+
+    const verificationStats = {
+      needsVerification: tasks.filter(t => t.needsVerification()).length,
+      pendingVerification: tasks.filter(t => t.verificationStatus === 'pending_verification').length,
+      verificationComplete: tasks.filter(t => t.isVerificationComplete()).length,
+      verificationApproved: tasks.filter(t => t.finalVerificationStatus === 'approved').length
+    };
+
+    res.status(200).json({
+      success: true,
+      date: today,
+      tasks,
+      tasksByStatus,
+      verificationStats,
+      total: tasks.length,
+      completed: tasksByStatus.completed.length,
+      pending: tasksByStatus.pending.length + tasksByStatus['in-progress'].length,
+      reassigned: tasksByStatus.reassigned.length
+    });
+
+  } catch (error) {
+    console.error("Get today's tasks error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch today's tasks"
+    });
+  }
+});
+
+// 🔹 PUT /api/tasks/update-status/:taskId - Update task status
+router.put("/update-status/:taskId", authenticateToken, async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const { status, completionNotes } = req.body;
+    const userId = req.user.id;
+
+    if (!status) {
+      return res.status(400).json({
+        success: false,
+        message: "Status is required"
+      });
+    }
+
+    const task = await Task.findById(taskId);
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        message: "Task not found"
+      });
+    }
+
+    const isAdmin = req.user.tokenId || req.user.role === 'admin' || req.user.role === 'super_admin';
+    if (task.assignedTo.toString() !== userId && !isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: "You can only update tasks assigned to you"
+      });
+    }
+
+    const oldStatus = task.status;
+    task.status = status;
+    if (completionNotes) {
+      task.completionNotes = completionNotes;
+    }
+
+    if (status === 'completed' && !task.completedAt) {
+      task.completedAt = new Date();
+    }
+
+    await task.save();
+
+    await task.populate([
+      { path: 'assignedTo', select: 'username email name' },
+      { path: 'assignedBy', select: 'username email name' },
+      { path: 'originalAssignee', select: 'username email name' },
+      { path: 'verifierId', select: 'username email name' }
+    ]);
+
+    const responseData = {
+      success: true,
+      message: `Task marked as ${status}`,
+      task,
+      verificationSummary: task.getVerificationSummary()
+    };
+
+    res.status(200).json(responseData);
+
+  } catch (error) {
+    console.error("Update task status error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to update task status"
+    });
+  }
+});
+
+// ========================================
+// 🔥 SIMPLE VERIFICATION ROUTES
+// ========================================
+
+// 🔹 POST /api/tasks/assign-verifier/:taskId - Manually assign single verifier (FOR FRONTEND)
+router.post("/assign-verifier/:taskId", authenticateToken, adminOnly, async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const { verifierId } = req.body;
+
+    console.log('🔍 Assign verifier request:', { taskId, verifierId });
+
+    if (!verifierId) {
+      return res.status(400).json({
+        success: false,
+        message: "Verifier ID is required"
+      });
+    }
+
+    const task = await Task.findById(taskId);
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        message: "Task not found"
+      });
+    }
+
+    if (task.status !== 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: "Task must be completed before verification"
+      });
+    }
+
+    // Check if verifier exists
+    const verifier = await User.findById(verifierId);
+    if (!verifier) {
+      return res.status(404).json({
+        success: false,
+        message: "Verifier not found"
+      });
+    }
+
+    // Check if verification already assigned
+    if (task.verifierId) {
+      return res.status(400).json({
+        success: false,
+        message: "Verification already assigned to this task"
+      });
+    }
+
+    // Update task with verification details
+    task.verificationStatus = 'pending_verification';
+    task.verifierId = verifierId;
+    task.verificationAssignedAt = new Date();
+
+    await task.save();
+
+    await task.populate([
+      { path: 'verifierId', select: 'username email name' },
+      { path: 'assignedTo', select: 'username email name' }
+    ]);
+
+    console.log('✅ Verifier assigned successfully:', {
+      taskId: task._id,
+      taskTitle: task.title,
+      verifier: task.verifierId.username
+    });
+
+    res.json({
+      success: true,
+      message: "Verifier assigned successfully",
+      task: {
+        id: task._id,
+        title: task.title,
+        verifierId: task.verifierId,
+        verificationStatus: task.verificationStatus,
+        verificationAssignedAt: task.verificationAssignedAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Assign verifier error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error: ' + error.message
+    });
+  }
+});
+
+// 🔹 GET /api/tasks/needs-verification - Get tasks needing verification assignment
+router.get("/needs-verification", authenticateToken, adminOnly, async (req, res) => {
+  try {
+    const tasks = await Task.getTasksNeedingVerification()
+      .populate('assignedTo', 'username email name')
+      .populate('assignedBy', 'username email name')
+      .sort({ completedAt: -1 });
+
+    console.log('📋 Tasks needing verification:', tasks.length);
+
+    res.status(200).json({
+      success: true,
+      message: `Found ${tasks.length} tasks needing verification`,
+      tasks: tasks.map(task => ({
+        id: task._id,
+        title: task.title,
+        category: task.category,
+        location: task.location,
+        priority: task.priority,
+        completedAt: task.completedAt,
+        assignedTo: task.assignedTo,
+        needsVerification: task.needsVerification()
+      })),
+      total: tasks.length
+    });
+
+  } catch (error) {
+    console.error("Get tasks needing verification error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to get tasks needing verification"
+    });
+  }
+});
+
+// 🔹 GET /api/tasks/my-verification-tasks - Get verification tasks for current user (verifier view)
+router.get("/my-verification-tasks", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { status } = req.query;
+
+    let query = { verifierId: userId };
+    if (status) query.verificationStatus = status;
+
+    const tasks = await Task.find(query)
+      .populate('assignedTo', 'username email name')
+      .populate('assignedBy', 'username email name')
+      .sort({ verificationAssignedAt: -1 });
+
+    const verificationTasks = tasks.map(task => ({
+      id: task._id,
+      title: task.title,
+      description: task.description,
+      category: task.category,
+      location: task.location,
+      priority: task.priority,
+      assignedTo: task.assignedTo,
+      completedAt: task.completedAt,
+      verificationStatus: task.verificationStatus,
+      verificationAssignedAt: task.verificationAssignedAt,
+      verificationScore: task.verificationScore,
+      verificationResult: task.verificationResult,
+      verificationNotes: task.verificationNotes,
+      isOverdue: task.verificationAssignedAt && 
+                  new Date() > new Date(task.verificationAssignedAt.getTime() + 24 * 60 * 60 * 1000)
+    }));
+
+    res.status(200).json({
+      success: true,
+      tasks: verificationTasks,
+      total: verificationTasks.length,
+      summary: {
+        pending: verificationTasks.filter(t => t.verificationStatus === 'pending_verification').length,
+        completed: verificationTasks.filter(t => t.verificationStatus === 'completed').length,
+        overdue: verificationTasks.filter(t => t.isOverdue).length
+      }
+    });
+
+  } catch (error) {
+    console.error("Get my verification tasks error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to get your verification tasks"
+    });
+  }
+});
+
+// 🔹 PUT /api/tasks/submit-verification/:taskId - Submit verification result
+router.put("/submit-verification/:taskId", authenticateToken, async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const { score, result, notes } = req.body;
+    const userId = req.user.id;
+
+    if (!score || !result) {
+      return res.status(400).json({
+        success: false,
+        message: "Score and result are required"
+      });
+    }
+
+    if (score < 1 || score > 5) {
+      return res.status(400).json({
+        success: false,
+        message: "Score must be between 1 and 5"
+      });
+    }
+
+    if (!['pass', 'fail', 'recheck'].includes(result)) {
+      return res.status(400).json({
+        success: false,
+        message: "Result must be 'pass', 'fail', or 'recheck'"
+      });
+    }
+
+    const task = await Task.findById(taskId);
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        message: "Task not found"
+      });
+    }
+
+    // Check if user is assigned verifier
+    if (!task.verifierId || task.verifierId.toString() !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not assigned to verify this task"
+      });
+    }
+
+    if (task.verificationStatus === 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: "Verification already completed for this task"
+      });
+    }
+
+    // Update verification
+    task.verificationStatus = 'completed';
+    task.verificationScore = parseInt(score);
+    task.verificationResult = result;
+    task.verificationNotes = notes || '';
+    task.verificationCompletedAt = new Date();
+
+    await task.save();
+
+    await task.populate([
+      { path: 'assignedTo', select: 'username email name' },
+      { path: 'verifierId', select: 'username email name' }
+    ]);
+
+    res.status(200).json({
+      success: true,
+      message: "Verification submitted successfully",
+      verification: {
+        taskId: task._id,
+        taskTitle: task.title,
+        score: task.verificationScore,
+        result: task.verificationResult,
+        notes: task.verificationNotes,
+        finalStatus: task.finalVerificationStatus
+      }
+    });
+
+  } catch (error) {
+    console.error("Submit verification error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to submit verification"
+    });
+  }
+});
+
+// 🔹 GET /api/tasks/verification-status/:taskId - Get verification status for a task
+router.get("/verification-status/:taskId", authenticateToken, async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    
+    const task = await Task.findById(taskId)
+      .populate('verifierId', 'username email name')
+      .populate('assignedTo', 'username email name');
+
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        message: "Task not found"
+      });
+    }
+
+    // Check access permissions
+    const isAdmin = req.user.tokenId || req.user.role === 'admin' || req.user.role === 'super_admin';
+    const isTaskOwner = task.assignedTo._id.toString() === req.user.id;
+    const isVerifier = task.verifierId && task.verifierId._id.toString() === req.user.id;
+    
+    if (!isAdmin && !isTaskOwner && !isVerifier) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied"
+      });
+    }
+
+    const verificationSummary = task.getVerificationSummary();
+    
+    res.status(200).json({
+      success: true,
+      task: {
+        id: task._id,
+        title: task.title,
+        status: task.status,
+        verificationStatus: task.verificationStatus,
+        verificationResult: task.verificationResult,
+        finalVerificationStatus: task.finalVerificationStatus,
+        verificationScore: task.verificationScore,
+        verificationNotes: task.verificationNotes,
+        verifierId: task.verifierId,
+        verificationAssignedAt: task.verificationAssignedAt,
+        verificationCompletedAt: task.verificationCompletedAt
+      },
+      verificationSummary,
+      needsVerification: task.needsVerification(),
+      isVerificationComplete: task.isVerificationComplete(),
+      isVerificationPending: task.isVerificationPending()
+    });
+
+  } catch (error) {
+    console.error("Get verification status error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to get verification status"
+    });
+  }
+});
+
+// ========================================
+// ADMIN ROUTES WITH VERIFICATION
+// ========================================
+
+// 🔹 GET /api/tasks/admin/all - Get all tasks (admin only) with verification info
+router.get("/admin/all", authenticateToken, adminOnly, async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 50, // Increased default limit
+      status, 
+      priority, 
+      category, 
+      date,
+      assignedTo,
+      showReassigned,
+      verificationStatus,
+      verificationResult
+    } = req.query;
+
+    let query = {};
+    if (status) query.status = status;
+    if (priority) query.priority = priority;
+    if (category) query.category = category;
+    if (date) query.date = date;
+    if (assignedTo) query.assignedTo = assignedTo;
+    if (showReassigned === 'true') query.isReassigned = true;
+    if (showReassigned === 'false') query.isReassigned = { $ne: true };
+    if (verificationStatus) query.verificationStatus = verificationStatus;
+    if (verificationResult) query.verificationResult = verificationResult;
+
+    const tasks = await Task.find(query)
+      .populate('assignedTo', 'username email name department jobTitle')
+      .populate('assignedBy', 'username email name')
+      .populate('originalAssignee', 'username email name')
+      .populate('verifierId', 'username email name department jobTitle')
+      .populate('reassignmentHistory.fromUser', 'username email name')
+      .populate('reassignmentHistory.toUser', 'username email name')
+      .sort({ date: -1, priority: 1, createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const total = await Task.countDocuments(query);
+
+    // Add verification summaries
+    const tasksWithVerification = tasks.map(task => {
+      const taskObj = task.toObject();
+      taskObj.verificationSummary = task.getVerificationSummary();
+      taskObj.needsVerification = task.needsVerification();
+      taskObj.isVerificationComplete = task.isVerificationComplete();
+      taskObj.isVerificationPending = task.isVerificationPending();
+      return taskObj;
+    });
+
+    console.log(`📊 Admin fetched ${tasks.length}/${total} tasks`);
+
+    res.status(200).json({
+      success: true,
+      tasks: tasksWithVerification,
+      pagination: {
+        current: parseInt(page),
+        total: Math.ceil(total / limit),
+        hasNext: page * limit < total,
+        hasPrev: page > 1
+      },
+      totalTasks: total
+    });
+
+  } catch (error) {
+    console.error("Get all tasks error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch all tasks"
+    });
+  }
+});
+
+// 🔹 GET /api/tasks/admin/dashboard - Enhanced admin dashboard with verification
+router.get("/admin/dashboard", authenticateToken, adminOnly, async (req, res) => {
+  try {
+    const { period = 'today' } = req.query;
+    
+    // Calculate date range
+    let startDate = new Date();
+    switch (period) {
+      case 'today':
+        startDate.setHours(0, 0, 0, 0);
+        break;
+      case 'week':
+        startDate.setDate(startDate.getDate() - 7);
+        break;
+      case 'month':
+        startDate.setMonth(startDate.getMonth() - 1);
+        break;
+      default:
+        startDate.setHours(0, 0, 0, 0);
+    }
+
+    const tasks = await Task.find({
+      createdAt: { $gte: startDate }
+    })
+    .populate('assignedTo', 'username email name')
+    .populate('verifierId', 'username email name')
+    .sort({ createdAt: -1 });
+
+    // Calculate task statistics
+    const taskStats = {
+      total: tasks.length,
+      pending: tasks.filter(t => t.status === 'pending').length,
+      inProgress: tasks.filter(t => t.status === 'in-progress').length,
+      completed: tasks.filter(t => t.status === 'completed').length,
+      cancelled: tasks.filter(t => t.status === 'cancelled').length,
+      reassigned: tasks.filter(t => t.status === 'reassigned').length,
+      autoReassigned: tasks.filter(t => t.isReassigned === true).length,
+      highPriority: tasks.filter(t => t.priority === 'high' || t.priority === 'urgent').length,
+      overdue: tasks.filter(t => t.status === 'pending' && new Date() > new Date(t.date + ' 23:59:59')).length
+    };
+
+    // Verification statistics
+    const verificationStats = {
+      needsVerification: tasks.filter(t => t.needsVerification()).length,
+      pendingVerification: tasks.filter(t => t.verificationStatus === 'pending_verification').length,
+      verificationComplete: tasks.filter(t => t.isVerificationComplete()).length,
+      verificationApproved: tasks.filter(t => t.finalVerificationStatus === 'approved').length,
+      verificationRejected: tasks.filter(t => t.finalVerificationStatus === 'rejected').length,
+      averageScore: 0
+    };
+
+    // Calculate average verification score
+    const scoredTasks = tasks.filter(t => t.verificationScore > 0);
+    if (scoredTasks.length > 0) {
+      verificationStats.averageScore = Math.round(
+        (scoredTasks.reduce((sum, task) => sum + task.verificationScore, 0) / scoredTasks.length) * 10
+      ) / 10;
+    }
+
+    // Group by category
+    const tasksByCategory = {};
+    
+    tasks.forEach(task => {
+      if (!tasksByCategory[task.category]) {
+        tasksByCategory[task.category] = { total: 0, completed: 0, verified: 0, avgScore: 0, scores: [] };
+      }
+      tasksByCategory[task.category].total++;
+      
+      if (task.status === 'completed') {
+        tasksByCategory[task.category].completed++;
+      }
+      
+      if (task.isVerificationComplete()) {
+        tasksByCategory[task.category].verified++;
+        if (task.verificationScore) {
+          tasksByCategory[task.category].scores.push(task.verificationScore);
+        }
+      }
+    });
+
+    // Calculate category averages
+    Object.keys(tasksByCategory).forEach(cat => {
+      const scores = tasksByCategory[cat].scores;
+      if (scores.length > 0) {
+        tasksByCategory[cat].avgScore = Math.round(
+          (scores.reduce((sum, s) => sum + s, 0) / scores.length) * 10
+        ) / 10;
+      }
+      delete tasksByCategory[cat].scores;
+    });
+
+    const recentTasks = tasks.slice(0, 15).map(task => ({
+      id: task._id,
+      title: task.title,
+      category: task.category,
+      status: task.status,
+      priority: task.priority,
+      assignedTo: task.assignedTo?.username || 'Unknown',
+      verificationStatus: task.verificationStatus,
+      verificationResult: task.verificationResult,
+      verificationScore: task.verificationScore,
+      finalVerificationStatus: task.finalVerificationStatus,
+      needsVerification: task.needsVerification(),
+      isVerificationComplete: task.isVerificationComplete(),
+      date: task.date,
+      completedAt: task.completedAt
+    }));
+
+    res.status(200).json({
+      success: true,
+      period,
+      taskStats,
+      verificationStats,
+      tasksByCategory,
+      recentTasks,
+      summary: {
+        completionRate: taskStats.total > 0 ? Math.round((taskStats.completed / taskStats.total) * 100) : 0,
+        verificationRate: taskStats.completed > 0 ? Math.round((verificationStats.verificationComplete / taskStats.completed) * 100) : 0,
+        approvalRate: verificationStats.verificationComplete > 0 ? Math.round((verificationStats.verificationApproved / verificationStats.verificationComplete) * 100) : 0,
+        reassignmentRate: taskStats.total > 0 ? Math.round((taskStats.autoReassigned / taskStats.total) * 100) : 0
+      }
+    });
+
+  } catch (error) {
+    console.error("Get admin dashboard error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to get admin dashboard"
+    });
+  }
+});
+
+// ========================================
+// EXISTING ROUTES (Reassignment, etc.)
+// ========================================
 
 // 🔹 POST /api/tasks/check-reassignments - Check and reassign tasks for a specific date
 router.post("/check-reassignments", authenticateToken, adminOnly, async (req, res) => {
@@ -505,35 +1175,6 @@ router.post("/manual-reassign/:taskId", authenticateToken, adminOnly, async (req
   }
 });
 
-// 🔹 GET /api/tasks/available-users/:category/:date - Get available users for a category and date
-router.get("/available-users/:category/:date", authenticateToken, adminOnly, async (req, res) => {
-  try {
-    const { category, date } = req.params;
-    const { excludeUserId } = req.query;
-
-    const availableUsers = await autoReassignmentService.findAvailableUsers(
-      category, 
-      date, 
-      excludeUserId
-    );
-
-    res.status(200).json({
-      success: true,
-      message: `Found ${availableUsers.length} available users for ${category} on ${date}`,
-      users: availableUsers,
-      category: category,
-      date: date
-    });
-
-  } catch (error) {
-    console.error("Get available users error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to get available users"
-    });
-  }
-});
-
 // 🔹 GET /api/tasks/reassignment-stats - Get reassignment statistics
 router.get("/reassignment-stats", authenticateToken, adminOnly, async (req, res) => {
   try {
@@ -557,314 +1198,13 @@ router.get("/reassignment-stats", authenticateToken, adminOnly, async (req, res)
   }
 });
 
-// 🔹 GET /api/tasks/my-tasks - Get current user's tasks
-router.get("/my-tasks", authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { status, date, priority, category } = req.query;
-
-    let query = { assignedTo: userId };
-    
-    if (status) query.status = status;
-    if (date) query.date = date;
-    if (priority) query.priority = priority;
-    if (category) query.category = category;
-
-    const tasks = await Task.find(query)
-      .populate('assignedBy', 'username email')
-      .populate('originalAssignee', 'username email')
-      .sort({ date: -1, priority: 1, createdAt: -1 });
-
-    res.status(200).json({
-      success: true,
-      tasks,
-      total: tasks.length
-    });
-
-  } catch (error) {
-    console.error("Get my tasks error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch your tasks"
-    });
-  }
-});
-
-// 🔹 GET /api/tasks/today - Get today's tasks for current user
-router.get("/today", authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const today = new Date().toISOString().split('T')[0];
-
-    const tasks = await Task.find({ 
-      assignedTo: userId, 
-      date: today 
-    })
-    .populate('assignedBy', 'username email')
-    .populate('originalAssignee', 'username email')
-    .sort({ priority: 1, createdAt: -1 });
-
-    const tasksByStatus = {
-      pending: tasks.filter(t => t.status === 'pending'),
-      'in-progress': tasks.filter(t => t.status === 'in-progress'),
-      completed: tasks.filter(t => t.status === 'completed'),
-      cancelled: tasks.filter(t => t.status === 'cancelled'),
-      reassigned: tasks.filter(t => t.status === 'reassigned')
-    };
-
-    res.status(200).json({
-      success: true,
-      date: today,
-      tasks,
-      tasksByStatus,
-      total: tasks.length,
-      completed: tasksByStatus.completed.length,
-      pending: tasksByStatus.pending.length + tasksByStatus['in-progress'].length,
-      reassigned: tasksByStatus.reassigned.length
-    });
-
-  } catch (error) {
-    console.error("Get today's tasks error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch today's tasks"
-    });
-  }
-});
-
-// 🔹 PUT /api/tasks/update-status/:taskId - Update task status
-router.put("/update-status/:taskId", authenticateToken, async (req, res) => {
-  try {
-    const { taskId } = req.params;
-    const { status, completionNotes } = req.body;
-    const userId = req.user.id;
-
-    if (!status) {
-      return res.status(400).json({
-        success: false,
-        message: "Status is required"
-      });
-    }
-
-    const task = await Task.findById(taskId);
-    if (!task) {
-      return res.status(404).json({
-        success: false,
-        message: "Task not found"
-      });
-    }
-
-    const isAdmin = req.user.tokenId || req.user.role === 'admin' || req.user.role === 'super_admin';
-    if (task.assignedTo.toString() !== userId && !isAdmin) {
-      return res.status(403).json({
-        success: false,
-        message: "You can only update tasks assigned to you"
-      });
-    }
-
-    task.status = status;
-    if (completionNotes) {
-      task.completionNotes = completionNotes;
-    }
-
-    if (status === 'completed' && !task.completedAt) {
-      task.completedAt = new Date();
-    }
-
-    await task.save();
-    await task.populate([
-      { path: 'assignedTo', select: 'username email' },
-      { path: 'assignedBy', select: 'username email' },
-      { path: 'originalAssignee', select: 'username email' }
-    ]);
-
-    res.status(200).json({
-      success: true,
-      message: `Task marked as ${status}`,
-      task
-    });
-
-  } catch (error) {
-    console.error("Update task status error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to update task status"
-    });
-  }
-});
-
-// 🔹 PUT /api/tasks/rate/:taskId - Rate a completed task (admin only)
-router.put("/rate/:taskId", authenticateToken, adminOnly, async (req, res) => {
-  try {
-    const { taskId } = req.params;
-    const { rating } = req.body;
-
-    if (!rating || rating < 1 || rating > 5) {
-      return res.status(400).json({
-        success: false,
-        message: "Rating must be between 1 and 5"
-      });
-    }
-
-    const task = await Task.findById(taskId);
-    if (!task) {
-      return res.status(404).json({
-        success: false,
-        message: "Task not found"
-      });
-    }
-
-    if (task.status !== 'completed') {
-      return res.status(400).json({
-        success: false,
-        message: "Can only rate completed tasks"
-      });
-    }
-
-    task.rating = rating;
-    await task.save();
-
-    await task.populate([
-      { path: 'assignedTo', select: 'username email' },
-      { path: 'assignedBy', select: 'username email' },
-      { path: 'originalAssignee', select: 'username email' }
-    ]);
-
-    res.status(200).json({
-      success: true,
-      message: "Task rated successfully",
-      task
-    });
-
-  } catch (error) {
-    console.error("Rate task error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to rate task"
-    });
-  }
-});
-
-// 🔹 GET /api/tasks/admin/all - Get all tasks (admin only) with reassignment info
-router.get("/admin/all", authenticateToken, adminOnly, async (req, res) => {
-  try {
-    const { 
-      page = 1, 
-      limit = 20, 
-      status, 
-      priority, 
-      category, 
-      date,
-      assignedTo,
-      showReassigned
-    } = req.query;
-
-    let query = {};
-    if (status) query.status = status;
-    if (priority) query.priority = priority;
-    if (category) query.category = category;
-    if (date) query.date = date;
-    if (assignedTo) query.assignedTo = assignedTo;
-    if (showReassigned === 'true') query.isReassigned = true;
-    if (showReassigned === 'false') query.isReassigned = { $ne: true };
-
-    const tasks = await Task.find(query)
-      .populate('assignedTo', 'username email')
-      .populate('assignedBy', 'username email')
-      .populate('originalAssignee', 'username email')
-      .populate('reassignmentHistory.fromUser', 'username email')
-      .populate('reassignmentHistory.toUser', 'username email')
-      .sort({ date: -1, priority: 1, createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
-
-    const total = await Task.countDocuments(query);
-
-    res.status(200).json({
-      success: true,
-      tasks,
-      pagination: {
-        current: parseInt(page),
-        total: Math.ceil(total / limit),
-        hasNext: page * limit < total,
-        hasPrev: page > 1
-      },
-      totalTasks: total
-    });
-
-  } catch (error) {
-    console.error("Get all tasks error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch all tasks"
-    });
-  }
-});
-
-// 🔹 GET /api/tasks/admin/today-summary - Enhanced today's summary with reassignment info
-router.get("/admin/today-summary", authenticateToken, adminOnly, async (req, res) => {
-  try {
-    const today = new Date().toISOString().split('T')[0];
-
-    const todayTasks = await Task.find({ date: today })
-      .populate('assignedTo', 'username email')
-      .populate('originalAssignee', 'username email')
-      .sort({ priority: 1 });
-
-    const summary = {
-      total: todayTasks.length,
-      pending: todayTasks.filter(t => t.status === 'pending').length,
-      inProgress: todayTasks.filter(t => t.status === 'in-progress').length,
-      completed: todayTasks.filter(t => t.status === 'completed').length,
-      cancelled: todayTasks.filter(t => t.status === 'cancelled').length,
-      reassigned: todayTasks.filter(t => t.status === 'reassigned').length,
-      autoReassigned: todayTasks.filter(t => t.isReassigned === true).length,
-      highPriority: todayTasks.filter(t => t.priority === 'high' || t.priority === 'urgent').length,
-      overdue: todayTasks.filter(t => t.status === 'pending' && new Date() > new Date(t.date + ' 23:59:59')).length
-    };
-
-    // Group by category
-    const tasksByCategory = {};
-    const reassignmentsByCategory = {};
-    
-    todayTasks.forEach(task => {
-      if (!tasksByCategory[task.category]) {
-        tasksByCategory[task.category] = 0;
-      }
-      tasksByCategory[task.category]++;
-
-      if (task.isReassigned) {
-        if (!reassignmentsByCategory[task.category]) {
-          reassignmentsByCategory[task.category] = 0;
-        }
-        reassignmentsByCategory[task.category]++;
-      }
-    });
-
-    res.status(200).json({
-      success: true,
-      date: today,
-      summary,
-      tasksByCategory,
-      reassignmentsByCategory,
-      tasks: todayTasks
-    });
-
-  } catch (error) {
-    console.error("Get today's task summary error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch today's task summary"
-    });
-  }
-});
-
 // 🔹 PUT /api/tasks/update/:taskId - Update task details (admin only)
 router.put("/update/:taskId", authenticateToken, adminOnly, async (req, res) => {
   try {
     const { taskId } = req.params;
     const updates = req.body;
 
+    // Prevent updating certain fields
     delete updates._id;
     delete updates.assignedBy;
     delete updates.createdAt;
@@ -878,15 +1218,17 @@ router.put("/update/:taskId", authenticateToken, adminOnly, async (req, res) => 
       });
     }
 
+    // Update fields
     Object.keys(updates).forEach(key => {
       task[key] = updates[key];
     });
 
     await task.save();
     await task.populate([
-      { path: 'assignedTo', select: 'username email' },
-      { path: 'assignedBy', select: 'username email' },
-      { path: 'originalAssignee', select: 'username email' }
+      { path: 'assignedTo', select: 'username email name' },
+      { path: 'assignedBy', select: 'username email name' },
+      { path: 'originalAssignee', select: 'username email name' },
+      { path: 'verifierId', select: 'username email name' }
     ]);
 
     res.status(200).json({
@@ -935,164 +1277,6 @@ router.delete("/delete/:taskId", authenticateToken, adminOnly, async (req, res) 
     res.status(500).json({
       success: false,
       message: "Failed to delete task"
-    });
-  }
-});
-
-// 🔹 GET /api/tasks/user-performance/:userId - Get user's task performance
-router.get("/user-performance/:userId", authenticateToken, adminOnly, async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { month, year } = req.query;
-
-    let query = { assignedTo: userId };
-    
-    if (month && year) {
-      const startDate = `${year}-${month.padStart(2, '0')}-01`;
-      const endDate = new Date(year, month, 0).toISOString().split('T')[0];
-      query.date = { $gte: startDate, $lte: endDate };
-    }
-
-    const tasks = await Task.find(query);
-
-    const performance = {
-      totalTasks: tasks.length,
-      completed: tasks.filter(t => t.status === 'completed').length,
-      pending: tasks.filter(t => t.status === 'pending').length,
-      inProgress: tasks.filter(t => t.status === 'in-progress').length,
-      cancelled: tasks.filter(t => t.status === 'cancelled').length,
-      reassignedToMe: tasks.filter(t => t.isReassigned && t.assignedTo.toString() === userId).length,
-      reassignedFromMe: tasks.filter(t => t.originalAssignee && t.originalAssignee.toString() === userId).length,
-      averageRating: 0,
-      completionRate: 0
-    };
-
-    if (performance.totalTasks > 0) {
-      performance.completionRate = Math.round((performance.completed / performance.totalTasks) * 100);
-    }
-
-    const ratedTasks = tasks.filter(t => t.rating && t.rating > 0);
-    if (ratedTasks.length > 0) {
-      performance.averageRating = Math.round(
-        (ratedTasks.reduce((sum, task) => sum + task.rating, 0) / ratedTasks.length) * 10
-      ) / 10;
-    }
-
-    res.status(200).json({
-      success: true,
-      userId,
-      performance,
-      period: month && year ? `${year}-${month}` : 'all-time'
-    });
-
-  } catch (error) {
-    console.error("Get user performance error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch user performance"
-    });
-  }
-});
-
-// 🔹 POST /api/tasks/bulk-assign - Bulk assign tasks with auto-reassignment
-router.post("/bulk-assign", authenticateToken, adminOnly, async (req, res) => {
-  try {
-    const { tasks } = req.body;
-
-    if (!tasks || !Array.isArray(tasks)) {
-      return res.status(400).json({
-        success: false,
-        message: "Tasks array is required"
-      });
-    }
-
-    const results = {
-      successful: [],
-      failed: [],
-      reassigned: []
-    };
-
-    for (const taskData of tasks) {
-      try {
-        const {
-          title,
-          description,
-          assignedTo,
-          date,
-          priority,
-          category,
-          location,
-          estimatedDuration
-        } = taskData;
-
-        if (!title || !assignedTo || !date || !category || !location) {
-          results.failed.push({
-            task: taskData,
-            reason: "Missing required fields"
-          });
-          continue;
-        }
-
-        const user = await User.findById(assignedTo);
-        if (!user) {
-          results.failed.push({
-            task: taskData,
-            reason: "User not found"
-          });
-          continue;
-        }
-
-        const newTask = new Task({
-          title,
-          description: description || '',
-          assignedTo,
-          assignedBy: req.user.id || req.user.tokenId || 'admin',
-          date,
-          priority: priority || 'medium',
-          category,
-          location,
-          estimatedDuration: estimatedDuration || 60
-        });
-
-        await newTask.save();
-
-        // Check for auto-reassignment
-        const isPresent = await autoReassignmentService.checkUserPresence(assignedTo, date);
-        if (!isPresent) {
-          try {
-            const reassignResult = await autoReassignmentService.autoReassignTask(newTask._id, 'user_absent');
-            if (reassignResult.success) {
-              results.reassigned.push({
-                task: newTask,
-                reassignmentDetails: reassignResult.reassignmentDetails
-              });
-            }
-          } catch (error) {
-            console.log('Auto-reassignment failed for bulk task:', error.message);
-          }
-        }
-
-        results.successful.push(newTask);
-
-      } catch (error) {
-        results.failed.push({
-          task: taskData,
-          reason: error.message
-        });
-      }
-    }
-
-    res.status(200).json({
-      success: true,
-      message: `Bulk assignment completed. ${results.successful.length} successful, ${results.failed.length} failed, ${results.reassigned.length} auto-reassigned.`,
-      results
-    });
-
-  } catch (error) {
-    console.error("Bulk assign tasks error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to bulk assign tasks"
     });
   }
 });

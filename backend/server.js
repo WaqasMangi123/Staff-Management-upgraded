@@ -133,6 +133,9 @@ safeLoadRoute('./routes/shift', '/api/shifts', 'shift routes');
 safeLoadRoute('./routes/performance', '/api/performance', 'performance routes');
 safeLoadRoute('./routes/alert', '/api/alerts', 'alert routes');
 
+// 🔥 Load verification routes (NEW)
+safeLoadRoute('./routes/verification', '/api/verification', 'verification routes');
+
 // Health check
 app.get('/api/health', (req, res) => {
   const dbStatus = mongoose.connection.readyState;
@@ -199,6 +202,14 @@ app.get('/api', (req, res) => {
         'POST /api/alerts - Create alert',
         'PUT /api/alerts/:id - Mark alert as read',
         'DELETE /api/alerts/:id - Delete alert'
+      ],
+      verification: [
+        'POST /api/verification/create-team - Create secret team',
+        'GET /api/verification/teams - Get all teams',
+        'GET /api/verification/my-tasks - Get verification tasks',
+        'PUT /api/verification/submit/:id - Submit verification report',
+        'GET /api/verification/dashboard - Admin dashboard',
+        'GET /api/verification/overdue - Get overdue verifications'
       ]
     },
     development_mode: isDevelopment
@@ -221,7 +232,8 @@ app.get('/', (req, res) => {
       tasks: '/api/tasks',
       shifts: '/api/shifts',
       performance: '/api/performance',
-      alerts: '/api/alerts'
+      alerts: '/api/alerts',
+      verification: '/api/verification'
     }
   });
 });
@@ -240,7 +252,8 @@ app.use((req, res) => {
       '/api/tasks',
       '/api/shifts',
       '/api/performance',
-      '/api/alerts'
+      '/api/alerts',
+      '/api/verification'
     ]
   });
 });
@@ -362,5 +375,13 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('   PUT /api/alerts/:id - Mark alert as read');
   console.log('   DELETE /api/alerts/:id - Delete alert\n');
   
-  console.log('💡 READY FOR SCHEDULING SYSTEM TESTING! 🎉\n');
+  console.log('🔍 VERIFICATION ENDPOINTS (NEW):');
+  console.log('   POST /api/verification/create-team - Create secret team');
+  console.log('   GET /api/verification/teams - Get all teams');
+  console.log('   GET /api/verification/my-tasks - Get verification tasks');
+  console.log('   PUT /api/verification/submit/:id - Submit verification report');
+  console.log('   GET /api/verification/dashboard - Admin dashboard');
+  console.log('   GET /api/verification/overdue - Get overdue verifications\n');
+  
+  console.log('💡 READY FOR SCHEDULING SYSTEM + VERIFICATION TESTING! 🎉\n');
 });
